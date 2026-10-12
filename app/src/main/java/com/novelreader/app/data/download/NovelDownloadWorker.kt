@@ -190,15 +190,17 @@ class NovelDownloadWorker(
                             requestBuilder.header("Cookie", cookie)
                         }
 
-                        val response = client.newCall(requestBuilder.build()).execute()
-                        val html = response.body?.string().orEmpty()
-
-                        if (html.isNotBlank() && !html.contains("Enable JavaScript and cookies to continue")) {
-                            val content = parser.parseChapterContent(html)
-                            if (content.isNotBlank()) {
-                                db.chapterDao().saveChapterContent(novelId, chapter.chapterIndex, content)
-                                db.novelDao().refreshDownloadedCount(novelId)
-                                downloadSuccess = true
+                        client.newCall(requestBuilder.build()).execute().use { response ->
+                            if (response.isSuccessful) {
+                                val html = response.body?.string().orEmpty()
+                                if (html.isNotBlank() && !html.contains("Enable JavaScript and cookies to continue")) {
+                                    val content = parser.parseChapterContent(html)
+                                    if (content.isNotBlank()) {
+                                        db.chapterDao().saveChapterContent(novelId, chapter.chapterIndex, content)
+                                        db.novelDao().refreshDownloadedCount(novelId)
+                                        downloadSuccess = true
+                                    }
+                                }
                             }
                         }
                     } catch (e: Exception) {

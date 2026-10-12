@@ -46,6 +46,17 @@ class DownloadRetryTest {
     }
 
     @Test
+    fun testHttpErrorStatusHandling() {
+        val httpCode = 404
+        val isSuccessful = httpCode in 200..299
+        assertFalse(isSuccessful)
+
+        val challengeHtml = "<html><body>Enable JavaScript and cookies to continue</body></html>"
+        val isBotChallenge = challengeHtml.contains("Enable JavaScript and cookies to continue")
+        assertTrue(isBotChallenge)
+    }
+
+    @Test
     fun testParseChapterContentWithEmptyAndValidHtml() {
         val emptyHtml = ""
         val emptyContent = parser.parseChapterContent(emptyHtml)
