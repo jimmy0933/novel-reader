@@ -118,12 +118,21 @@ class NovelDownloadWorker(
 
             if (total == 0) {
                 db.novelDao().refreshDownloadedCount(novelId)
-                return@withContext Result.success()
+                return@withContext Result.success(
+                    workDataOf(
+                        "SUCCESS_COUNT" to 0,
+                        "FAILED_COUNT" to 0,
+                        "TOTAL" to 0
+                    )
+                )
             }
 
             val notificationManager =
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val notificationId = NOTIFICATION_ID_OFFSET + novelId.hashCode()
+
+            var successCount = 0
+            var failedCount = 0
 
             for ((index, chapter) in pendingChapters.withIndex()) {
                 if (isStopped) {
@@ -149,7 +158,9 @@ class NovelDownloadWorker(
                         workDataOf(
                             "PROGRESS" to currentStep,
                             "TOTAL" to total,
-                            "CURRENT_CHAPTER" to chapter.title
+                            "CURRENT_CHAPTER" to chapter.title,
+                            "SUCCESS_COUNT" to successCount,
+                            "FAILED_COUNT" to failedCount
                         )
                     )
                 } catch (e: Exception) {
@@ -203,18 +214,31 @@ class NovelDownloadWorker(
                     }
                 }
 
+                if (downloadSuccess) {
+                    successCount++
+                } else {
+                    failedCount++
+                }
+
                 // 章節間的溫和爬取間隔
                 delay(300)
             }
 
             db.novelDao().refreshDownloadedCount(novelId)
 
-            // 下載結束，可移除完成或持續通知
+            // 下載結束，依據成功與失敗數量顯示正確結果通知
             try {
+                val completionText = if (failedCount == 0) {
+                    "《$novelTitle》離線下載完成 (共 $total 章)"
+                } else {
+                    "《$novelTitle》下載完成：成功 $successCount 章，失敗 $failedCount 章 (可再次點擊下載重試)"
+                }
+
                 val completedNotification = NotificationCompat.Builder(context, CHANNEL_ID)
-                    .setContentTitle("下載完成")
-                    .setContentText("《$novelTitle》已成功離線整部小說")
-                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentTitle(if (failedCount == 0) "下載完成" else "下載部分完成")
+                    .setContentText(completionText)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(completionText))
+                    .setSmallIcon(if (failedCount == 0) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
                     .setAutoCancel(true)
                     .build()
 
@@ -223,7 +247,13 @@ class NovelDownloadWorker(
                 e.printStackTrace()
             }
 
-            Result.success()
+            Result.success(
+                workDataOf(
+                    "SUCCESS_COUNT" to successCount,
+                    "FAILED_COUNT" to failedCount,
+                    "TOTAL" to total
+                )
+            )
         } finally {
             if (wakeLock?.isHeld == true) {
                 try {
