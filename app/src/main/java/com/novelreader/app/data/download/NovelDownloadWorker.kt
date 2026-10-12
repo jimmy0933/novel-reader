@@ -37,17 +37,22 @@ class NovelDownloadWorker(
     }
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
+        createNotificationChannel()
         val novelId = inputData.getString("NOVEL_ID") ?: ""
         val notificationId = NOTIFICATION_ID_OFFSET + novelId.hashCode()
         val notification = createNotification("準備離線下載...", 0, 0)
 
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ForegroundInfo(
-                notificationId,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            )
-        } else {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ForegroundInfo(
+                    notificationId,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                ForegroundInfo(notificationId, notification)
+            }
+        } catch (e: Exception) {
             ForegroundInfo(notificationId, notification)
         }
     }
@@ -101,7 +106,7 @@ class NovelDownloadWorker(
             val novel = db.novelDao().getNovelById(novelId)
             val novelTitle = novel?.title ?: "作品"
 
-            // 啟動前設為 Foreground Service，確保背景下載不會被系統休眠砍掉
+            // 嘗試設為 Foreground Service，以防背景被系統砍掉，若受限則捕捉異常繼續下載
             try {
                 setForeground(getForegroundInfo())
             } catch (e: Exception) {
@@ -130,18 +135,26 @@ class NovelDownloadWorker(
                 val progressText = "[$currentStep/$total] $novelTitle - ${chapter.title}"
 
                 // 更新通知與 WorkManager 進度
-                notificationManager.notify(
-                    notificationId,
-                    createNotification(progressText, currentStep, total)
-                )
-
-                setProgress(
-                    workDataOf(
-                        "PROGRESS" to currentStep,
-                        "TOTAL" to total,
-                        "CURRENT_CHAPTER" to chapter.title
+                try {
+                    notificationManager.notify(
+                        notificationId,
+                        createNotification(progressText, currentStep, total)
                     )
-                )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+
+                try {
+                    setProgress(
+                        workDataOf(
+                            "PROGRESS" to currentStep,
+                            "TOTAL" to total,
+                            "CURRENT_CHAPTER" to chapter.title
+                        )
+                    )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
 
                 // 針對單一章節增加重試機制 (最多重試 3 次)
                 var downloadSuccess = false
@@ -197,14 +210,18 @@ class NovelDownloadWorker(
             db.novelDao().refreshDownloadedCount(novelId)
 
             // 下載結束，可移除完成或持續通知
-            val completedNotification = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setContentTitle("下載完成")
-                .setContentText("《$novelTitle》已成功離線整部小說")
-                .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setAutoCancel(true)
-                .build()
+            try {
+                val completedNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setContentTitle("下載完成")
+                    .setContentText("《$novelTitle》已成功離線整部小說")
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setAutoCancel(true)
+                    .build()
 
-            notificationManager.notify(notificationId, completedNotification)
+                notificationManager.notify(notificationId, completedNotification)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
 
             Result.success()
         } finally {
