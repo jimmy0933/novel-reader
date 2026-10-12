@@ -42,7 +42,7 @@ android {
         compose = true
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.4.6"
+        kotlinCompilerExtensionVersion = "1.5.8"
     }
     packaging {
         resources {
@@ -82,6 +82,9 @@ dependencies {
     // OkHttp & Coroutines
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // Testing
+    testImplementation("junit:junit:4.13.2")
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")

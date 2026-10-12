@@ -94,6 +94,16 @@ class MainActivity : ComponentActivity() {
                                         Toast.makeText(this@MainActivity, "同步失敗：${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
                                     }
                                 }
+                            },
+                            onDownloadSingleChapter = { chapterIndex ->
+                                lifecycleScope.launch {
+                                    val result = repository.downloadSingleChapter(novelId, chapterIndex)
+                                    if (result.isSuccess) {
+                                        Toast.makeText(this@MainActivity, "該章節下載完成！", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(this@MainActivity, "下載失敗：${result.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
                             }
                         )
                     }
