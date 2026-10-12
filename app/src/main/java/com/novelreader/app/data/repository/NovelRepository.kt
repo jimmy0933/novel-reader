@@ -7,9 +7,8 @@ import com.novelreader.app.data.local.AppDatabase
 import com.novelreader.app.data.local.ChapterEntity
 import com.novelreader.app.data.local.NovelEntity
 import com.novelreader.app.data.parser.UniversalNovelParser
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.security.MessageDigest
@@ -39,44 +38,107 @@ class NovelRepository(private val context: Context) {
         novelDao.updateReadingProgress(novelId, chapterId, chapterTitle, chapterIndex)
     }
 
+    private val repositoryScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val inFlightDownloads = java.util.concurrent.ConcurrentHashMap<Pair<String, Int>, Deferred<Result<Unit>>>()
+
     /**
-     * 下載單一章節
+     * 下載單一章節（提供即時閱讀、預載與背景整部下載共用，同一章節避免重複請求）
      */
     suspend fun downloadSingleChapter(novelId: String, chapterIndex: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        val chapter = chapterDao.getChapterByIndex(novelId, chapterIndex)
+            ?: return@withContext Result.failure(IllegalArgumentException("找不到該章節"))
+
+        if (chapter.isDownloaded && !chapter.content.isNullOrBlank()) {
+            return@withContext Result.success(Unit)
+        }
+
+        val key = Pair(novelId, chapterIndex)
+
+        val deferred = synchronized(inFlightDownloads) {
+            inFlightDownloads.getOrPut(key) {
+                repositoryScope.async {
+                    try {
+                        fetchAndSaveChapter(novelId, chapter)
+                    } finally {
+                        inFlightDownloads.remove(key)
+                    }
+                }
+            }
+        }
+
         try {
-            val chapter = chapterDao.getChapterByIndex(novelId, chapterIndex)
-                ?: return@withContext Result.failure(IllegalArgumentException("找不到該章節"))
-
-            val cookie = try {
-                android.webkit.CookieManager.getInstance().getCookie(chapter.url)
-            } catch (e: Exception) {
-                null
-            }
-
-            val requestBuilder = Request.Builder()
-                .url(chapter.url)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7")
-
-            if (!cookie.isNullOrBlank()) {
-                requestBuilder.header("Cookie", cookie)
-            }
-
-            val response = httpClient.newCall(requestBuilder.build()).execute()
-            val html = response.body?.string().orEmpty()
-
-            if (html.isNotBlank() && !html.contains("Enable JavaScript and cookies to continue")) {
-                val content = parser.parseChapterContent(html)
-                chapterDao.saveChapterContent(novelId, chapterIndex, content)
-                novelDao.refreshDownloadedCount(novelId)
-                Result.success(Unit)
-            } else {
-                Result.failure(IllegalStateException("無法讀取該章節內容"))
-            }
+            deferred.await()
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private suspend fun fetchAndSaveChapter(novelId: String, chapter: ChapterEntity): Result<Unit> {
+        var lastException: Throwable? = null
+        val maxAttempts = 3
+
+        for (attempt in 1..maxAttempts) {
+            try {
+                val cookie = try {
+                    android.webkit.CookieManager.getInstance().getCookie(chapter.url)
+                } catch (e: Exception) {
+                    null
+                }
+
+                val requestBuilder = Request.Builder()
+                    .url(chapter.url)
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .header("Accept-Language", "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7")
+
+                if (!cookie.isNullOrBlank()) {
+                    requestBuilder.header("Cookie", cookie)
+                }
+
+                httpClient.newCall(requestBuilder.build()).execute().use { response ->
+                    val statusCode = response.code
+
+                    if (!response.isSuccessful) {
+                        val msg = when (statusCode) {
+                            403 -> "HTTP 403: 存取被拒絕（可能有機器人防護）"
+                            404 -> "HTTP 404: 找不到該章節網頁"
+                            else -> "HTTP 狀態碼 $statusCode"
+                        }
+                        return Result.failure(IllegalStateException(msg))
+                    }
+
+                    val html = response.body?.string().orEmpty()
+
+                    if (html.isBlank()) {
+                        return Result.failure(IllegalStateException("網頁內容空白"))
+                    }
+
+                    if (html.contains("Enable JavaScript and cookies to continue") ||
+                        html.contains("cf-challenge") ||
+                        html.contains("captcha") ||
+                        html.contains("請開啟 JavaScript")
+                    ) {
+                        return Result.failure(IllegalStateException("觸發防護驗證頁，無法直接擷取"))
+                    }
+
+                    val content = parser.parseChapterContent(html)
+                    if (content.isBlank()) {
+                        return Result.failure(IllegalStateException("章節正文解析失敗或內容空白"))
+                    }
+
+                    // 驗證成功，存入資料庫
+                    chapterDao.saveChapterContent(novelId, chapter.chapterIndex, content)
+                    novelDao.refreshDownloadedCount(novelId)
+                    return Result.success(Unit)
+                }
+            } catch (e: Exception) {
+                lastException = e
+                if (attempt < maxAttempts) {
+                    delay(500L * attempt)
+                }
+            }
+        }
+        return Result.failure(lastException ?: IllegalStateException("下載該章節失敗"))
     }
 
     /**

@@ -6,6 +6,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,6 +38,10 @@ fun ReaderScreen(
     val hasPrevious = chapterIndex > 0
     val hasNext = chapters.isNotEmpty() && chapterIndex < chapters.size - 1
 
+    var isLoadingChapter by remember { mutableStateOf(false) }
+    var chapterError by remember { mutableStateOf<String?>(null) }
+    var retryTrigger by remember { mutableStateOf(0) }
+
     var isFirstLaunch by remember { mutableStateOf(true) }
     var isReadyToRecord by remember { mutableStateOf(false) }
     val lazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -56,9 +61,34 @@ fun ReaderScreen(
         }
     }
 
-    LaunchedEffect(novelId, chapterIndex, chapter) {
-        if (chapter != null) {
-            repository.updateReadingProgress(novelId, chapter.chapterId, chapter.title, chapterIndex)
+    // 處理當前章節載入、即時下載、閱讀進度更新與背景預載後續 2 章
+    LaunchedEffect(novelId, chapterIndex, retryTrigger) {
+        val currentChapter = repository.getChapter(novelId, chapterIndex)
+        if (currentChapter != null) {
+            if (currentChapter.isDownloaded && !currentChapter.content.isNullOrBlank()) {
+                isLoadingChapter = false
+                chapterError = null
+                repository.updateReadingProgress(novelId, currentChapter.chapterId, currentChapter.title, chapterIndex)
+                prefetchNextChapters(repository, novelId, chapterIndex)
+            } else {
+                isLoadingChapter = true
+                chapterError = null
+
+                val result = repository.downloadSingleChapter(novelId, chapterIndex)
+                if (result.isSuccess) {
+                    isLoadingChapter = false
+                    chapterError = null
+                    val updated = repository.getChapter(novelId, chapterIndex)
+                    if (updated != null) {
+                        repository.updateReadingProgress(novelId, updated.chapterId, updated.title, chapterIndex)
+                    }
+                    prefetchNextChapters(repository, novelId, chapterIndex)
+                } else {
+                    isLoadingChapter = false
+                    chapterError = result.exceptionOrNull()?.message ?: "章節下載失敗，請檢查網路連線"
+                    // 下載失敗時，絕不覆蓋原有閱讀進度
+                }
+            }
         }
     }
 
@@ -166,26 +196,12 @@ fun ReaderScreen(
                     }
                 },
                 actions = {
-                    // 單章下載按鈕（若本章未下載）
+                    // 單章下載／重試按鈕（若本章未下載）
                     if (chapter != null && !chapter.isDownloaded) {
-                        var isDownloadingThis by remember { mutableStateOf(false) }
                         IconButton(
-                            onClick = {
-                                if (!isDownloadingThis) {
-                                    isDownloadingThis = true
-                                    coroutineScope.launch {
-                                        val result = repository.downloadSingleChapter(novelId, chapterIndex)
-                                        isDownloadingThis = false
-                                        if (result.isSuccess) {
-                                            android.widget.Toast.makeText(context, "本章下載完成！", android.widget.Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            android.widget.Toast.makeText(context, "下載失敗：${result.exceptionOrNull()?.message}", android.widget.Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
-                            }
+                            onClick = { retryTrigger++ }
                         ) {
-                            if (isDownloadingThis) {
+                            if (isLoadingChapter) {
                                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = iconTint)
                             } else {
                                 Icon(Icons.Default.Download, contentDescription = "下載本章", tint = iconTint)
@@ -355,114 +371,188 @@ fun ReaderScreen(
                 .padding(padding)
                 .background(backgroundColor)
         ) {
-            // 進入或切換章節時的滾動控制：
-            // 還原當前章節的歷史閱讀段落與 offset
-            LaunchedEffect(chapter?.chapterIndex, paragraphs) {
-                if (paragraphs.isNotEmpty()) {
-                    val savedIdx = prefs.getInt("pos_${novelId}_${chapterIndex}", 0)
-                    val savedOffset = prefs.getInt("offset_${novelId}_${chapterIndex}", 0)
-                    if (savedIdx in 0 until paragraphs.size) {
-                        lazyListState.scrollToItem(savedIdx, savedOffset)
-                    } else {
-                        lazyListState.scrollToItem(0, 0)
-                    }
-                    isFirstLaunch = false
-                    delay(50)
-                    isReadyToRecord = true
+            if (isLoadingChapter) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "正在即時下載「${chapter?.title ?: "目前章節"}」...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = contentColor
+                    )
                 }
-            }
+            } else if (chapterError != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ErrorOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "章節下載失敗",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = contentColor
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = chapterError ?: "未知錯誤",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(onClick = { retryTrigger++ }) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("重試下載")
+                        }
+                        if (hasPrevious) {
+                            OutlinedButton(onClick = { switchChapter(chapterIndex - 1) }) {
+                                Text("返回上一章")
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 進入或切換章節時的滾動控制：
+                // 還原當前章節的歷史閱讀段落與 offset
+                LaunchedEffect(chapter?.chapterIndex, paragraphs) {
+                    if (paragraphs.isNotEmpty()) {
+                        val savedIdx = prefs.getInt("pos_${novelId}_${chapterIndex}", 0)
+                        val savedOffset = prefs.getInt("offset_${novelId}_${chapterIndex}", 0)
+                        if (savedIdx in 0 until paragraphs.size) {
+                            lazyListState.scrollToItem(savedIdx, savedOffset)
+                        } else {
+                            lazyListState.scrollToItem(0, 0)
+                        }
+                        isFirstLaunch = false
+                        delay(50)
+                        isReadyToRecord = true
+                    }
+                }
 
-            // 當手動滑動或 TTS 滾動時，即時記憶當前閱讀段落
-            LaunchedEffect(chapterIndex) {
-                snapshotFlow { Pair(lazyListState.firstVisibleItemIndex, lazyListState.firstVisibleItemScrollOffset) }
-                    .collect { (idx, offset) ->
+                // 當手動滑動或 TTS 滾動時，即時記憶當前閱讀段落
+                LaunchedEffect(chapterIndex) {
+                    snapshotFlow { Pair(lazyListState.firstVisibleItemIndex, lazyListState.firstVisibleItemScrollOffset) }
+                        .collect { (idx, offset) ->
+                            if (isReadyToRecord) {
+                                prefs.edit()
+                                    .putInt("pos_${novelId}_${chapterIndex}", idx)
+                                    .putInt("offset_${novelId}_${chapterIndex}", offset)
+                                    .apply()
+                            }
+                        }
+                }
+
+                // 離開頁面時再次確保保存進度
+                DisposableEffect(novelId, chapterIndex) {
+                    onDispose {
                         if (isReadyToRecord) {
+                            val idx = lazyListState.firstVisibleItemIndex
+                            val offset = lazyListState.firstVisibleItemScrollOffset
                             prefs.edit()
                                 .putInt("pos_${novelId}_${chapterIndex}", idx)
                                 .putInt("offset_${novelId}_${chapterIndex}", offset)
                                 .apply()
                         }
                     }
-            }
+                }
 
-            // 離開頁面時再次確保保存進度
-            DisposableEffect(novelId, chapterIndex) {
-                onDispose {
-                    if (isReadyToRecord) {
-                        val idx = lazyListState.firstVisibleItemIndex
-                        val offset = lazyListState.firstVisibleItemScrollOffset
-                        prefs.edit()
-                            .putInt("pos_${novelId}_${chapterIndex}", idx)
-                            .putInt("offset_${novelId}_${chapterIndex}", offset)
-                            .apply()
+                val highlightBg = if (isNightMode) Color(0xFF3E2723) else Color(0xFFFFF9C4) // 高亮行背景 (夜間微暗琥珀 / 日間淡黃)
+                val highlightColor = if (isNightMode) Color(0xFFFFD54F) else Color(0xFFE65100) // 高亮文字加強
+
+                val textFontSize = fontSize.sp
+                val textLineHeight = (fontSize * 1.6).sp
+                val titleFontSize = (fontSize + 4).sp
+                val titleLineHeight = ((fontSize + 4) * 1.4).sp
+
+                val currentPlayingIdx = ttsManager.currentParagraphIndex
+
+                androidx.compose.foundation.lazy.LazyColumn(
+                    state = lazyListState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp),
+                    contentPadding = PaddingValues(top = 16.dp, bottom = 80.dp)
+                ) {
+                    items(
+                        count = paragraphs.size,
+                        key = { idx -> idx },
+                        contentType = { idx -> if (idx == 0) "title" else "paragraph" }
+                    ) { idx ->
+                        val isHighlighted = (currentPlayingIdx == idx)
+                        val text = paragraphs[idx]
+
+                        ParagraphItem(
+                            text = text,
+                            isTitle = idx == 0,
+                            isHighlighted = isHighlighted,
+                            fontSize = if (idx == 0) titleFontSize else textFontSize,
+                            lineHeight = if (idx == 0) titleLineHeight else textLineHeight,
+                            contentColor = contentColor,
+                            highlightColor = highlightColor,
+                            highlightBg = highlightBg
+                        )
                     }
-                }
-            }
 
-            val highlightBg = if (isNightMode) Color(0xFF3E2723) else Color(0xFFFFF9C4) // 高亮行背景 (夜間微暗琥珀 / 日間淡黃)
-            val highlightColor = if (isNightMode) Color(0xFFFFD54F) else Color(0xFFE65100) // 高亮文字加強
-
-            val textFontSize = fontSize.sp
-            val textLineHeight = (fontSize * 1.6).sp
-            val titleFontSize = (fontSize + 4).sp
-            val titleLineHeight = ((fontSize + 4) * 1.4).sp
-
-            val currentPlayingIdx = ttsManager.currentParagraphIndex
-
-            androidx.compose.foundation.lazy.LazyColumn(
-                state = lazyListState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 20.dp),
-                contentPadding = PaddingValues(top = 16.dp, bottom = 80.dp)
-            ) {
-                items(
-                    count = paragraphs.size,
-                    key = { idx -> idx },
-                    contentType = { idx -> if (idx == 0) "title" else "paragraph" }
-                ) { idx ->
-                    val isHighlighted = (currentPlayingIdx == idx)
-                    val text = paragraphs[idx]
-
-                    ParagraphItem(
-                        text = text,
-                        isTitle = idx == 0,
-                        isHighlighted = isHighlighted,
-                        fontSize = if (idx == 0) titleFontSize else textFontSize,
-                        lineHeight = if (idx == 0) titleLineHeight else textLineHeight,
-                        contentColor = contentColor,
-                        highlightColor = highlightColor,
-                        highlightBg = highlightBg
-                    )
-                }
-
-                // 底部章節結束提示與下一章按鈕
-                item(key = "chapter_footer") {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 32.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        if (hasNext) {
-                            Button(
-                                onClick = { switchChapter(chapterIndex + 1) },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                Text("進入下一章")
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Icon(Icons.Default.NavigateNext, contentDescription = null)
+                    // 底部章節結束提示與下一章按鈕
+                    item(key = "chapter_footer") {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            if (hasNext) {
+                                Button(
+                                    onClick = { switchChapter(chapterIndex + 1) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Text("進入下一章")
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(Icons.Default.NavigateNext, contentDescription = null)
+                                }
+                            } else {
+                                Text(
+                                    text = "— 全書完結 / 已是最後一章 —",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
                             }
-                        } else {
-                            Text(
-                                text = "— 全書完結 / 已是最後一章 —",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.outline
-                            )
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+private suspend fun prefetchNextChapters(
+    repository: com.novelreader.app.data.repository.NovelRepository,
+    novelId: String,
+    currentChapterIndex: Int
+) {
+    for (i in 1..2) {
+        val targetIndex = currentChapterIndex + i
+        val nextChapter = repository.getChapter(novelId, targetIndex)
+        if (nextChapter != null && (!nextChapter.isDownloaded || nextChapter.content.isNullOrBlank())) {
+            repository.downloadSingleChapter(novelId, targetIndex)
         }
     }
 }

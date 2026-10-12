@@ -131,6 +131,9 @@ class NovelDownloadWorker(
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val notificationId = NOTIFICATION_ID_OFFSET + novelId.hashCode()
 
+            val app = context.applicationContext as? com.novelreader.app.NovelApplication
+            val repository = app?.repository
+
             var successCount = 0
             var failedCount = 0
 
@@ -167,56 +170,14 @@ class NovelDownloadWorker(
                     e.printStackTrace()
                 }
 
-                // 針對單一章節增加重試機制 (最多重試 3 次)
-                var downloadSuccess = false
-                var retryCount = 0
-                val maxRetries = 3
-
-                while (!downloadSuccess && retryCount < maxRetries && !isStopped) {
-                    try {
-                        val cookie = try {
-                            android.webkit.CookieManager.getInstance().getCookie(chapter.url)
-                        } catch (e: Exception) {
-                            null
-                        }
-
-                        val requestBuilder = Request.Builder()
-                            .url(chapter.url)
-                            .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
-                            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                            .header("Accept-Language", "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7")
-
-                        if (!cookie.isNullOrBlank()) {
-                            requestBuilder.header("Cookie", cookie)
-                        }
-
-                        client.newCall(requestBuilder.build()).execute().use { response ->
-                            if (response.isSuccessful) {
-                                val html = response.body?.string().orEmpty()
-                                if (html.isNotBlank() && !html.contains("Enable JavaScript and cookies to continue")) {
-                                    val content = parser.parseChapterContent(html)
-                                    if (content.isNotBlank()) {
-                                        db.chapterDao().saveChapterContent(novelId, chapter.chapterIndex, content)
-                                        db.novelDao().refreshDownloadedCount(novelId)
-                                        downloadSuccess = true
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-
-                    if (!downloadSuccess) {
-                        retryCount++
-                        if (retryCount < maxRetries) {
-                            // 重試前稍作等待 (1秒 ~ 2秒)
-                            delay(1000L * retryCount)
-                        }
-                    }
+                // 使用統一 Repository 下載邏輯，自動與即時閱讀／預載去重並依據相同標準驗證
+                val downloadResult: kotlin.Result<Unit> = if (repository != null) {
+                    repository.downloadSingleChapter(novelId, chapter.chapterIndex)
+                } else {
+                    kotlin.Result.failure(IllegalStateException("NovelRepository 未初始化"))
                 }
 
-                if (downloadSuccess) {
+                if (downloadResult.isSuccess) {
                     successCount++
                 } else {
                     failedCount++
