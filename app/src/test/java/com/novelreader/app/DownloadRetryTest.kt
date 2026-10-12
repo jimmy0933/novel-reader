@@ -27,6 +27,25 @@ class DownloadRetryTest {
     }
 
     @Test
+    fun testSuccessAndFailureCounting() {
+        val simulatedResults = listOf(true, true, false, true, false)
+        var successCount = 0
+        var failedCount = 0
+
+        for (downloadSuccess in simulatedResults) {
+            if (downloadSuccess) {
+                successCount++
+            } else {
+                failedCount++
+            }
+        }
+
+        assertEquals(3, successCount)
+        assertEquals(2, failedCount)
+        assertEquals(5, simulatedResults.size)
+    }
+
+    @Test
     fun testParseChapterContentWithEmptyAndValidHtml() {
         val emptyHtml = ""
         val emptyContent = parser.parseChapterContent(emptyHtml)
