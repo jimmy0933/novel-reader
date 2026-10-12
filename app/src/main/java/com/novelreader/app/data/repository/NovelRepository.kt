@@ -198,6 +198,7 @@ class NovelRepository(private val context: Context) {
                     .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build()
             )
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .build()
 
         workManager.enqueueUniqueWork(
