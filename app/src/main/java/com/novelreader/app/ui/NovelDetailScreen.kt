@@ -27,9 +27,11 @@ fun NovelDetailScreen(
     onBack: () -> Unit,
     onChapterClick: (Int) -> Unit,
     onDownloadAll: () -> Unit,
-    onSyncLatestChapters: () -> Unit
+    onSyncLatestChapters: () -> Unit,
+    onDownloadSingleChapter: (Int) -> Unit = {}
 ) {
     var isSyncing by remember { mutableStateOf(false) }
+    var downloadingChapterIndices by remember { mutableStateOf(setOf<Int>()) }
 
     Scaffold(
         topBar = {
@@ -154,11 +156,13 @@ fun NovelDetailScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     items(chapters, key = { it.chapterIndex }) { chapter ->
+                        val isDownloading = downloadingChapterIndices.contains(chapter.chapterIndex)
+
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onChapterClick(chapter.chapterIndex) }
-                                .padding(vertical = 12.dp),
+                                .padding(vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -172,8 +176,28 @@ fun NovelDetailScreen(
                                     Icons.Default.CheckCircle,
                                     contentDescription = "已離線",
                                     tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
+                            } else if (isDownloading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                IconButton(
+                                    onClick = {
+                                        downloadingChapterIndices = downloadingChapterIndices + chapter.chapterIndex
+                                        onDownloadSingleChapter(chapter.chapterIndex)
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Download,
+                                        contentDescription = "單選下載本章",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         }
                         Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))

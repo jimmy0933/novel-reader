@@ -40,6 +40,46 @@ class NovelRepository(private val context: Context) {
     }
 
     /**
+     * 下載單一章節
+     */
+    suspend fun downloadSingleChapter(novelId: String, chapterIndex: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val chapter = chapterDao.getChapterByIndex(novelId, chapterIndex)
+                ?: return@withContext Result.failure(IllegalArgumentException("找不到該章節"))
+
+            val cookie = try {
+                android.webkit.CookieManager.getInstance().getCookie(chapter.url)
+            } catch (e: Exception) {
+                null
+            }
+
+            val requestBuilder = Request.Builder()
+                .url(chapter.url)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7")
+
+            if (!cookie.isNullOrBlank()) {
+                requestBuilder.header("Cookie", cookie)
+            }
+
+            val response = httpClient.newCall(requestBuilder.build()).execute()
+            val html = response.body?.string().orEmpty()
+
+            if (html.isNotBlank() && !html.contains("Enable JavaScript and cookies to continue")) {
+                val content = parser.parseChapterContent(html)
+                chapterDao.saveChapterContent(novelId, chapterIndex, content)
+                novelDao.refreshDownloadedCount(novelId)
+                Result.success(Unit)
+            } else {
+                Result.failure(IllegalStateException("無法讀取該章節內容"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * 同步連載小說的最新章節（保留已下載內容，僅增量添加新發布章節）
      */
     suspend fun syncLatestChapters(novelId: String): Result<Int> = withContext(Dispatchers.IO) {

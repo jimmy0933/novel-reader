@@ -44,13 +44,7 @@ fun ReaderScreen(
     fun switchChapter(newIndex: Int) {
         if (newIndex >= 0 && (chapters.isEmpty() || newIndex < chapters.size)) {
             isReadyToRecord = false
-            // 切換章節時，重置該章節儲存進度為 0，確保由最開頭開始閱讀
-            prefs.edit()
-                .putInt("pos_${novelId}_${newIndex}", 0)
-                .putInt("offset_${novelId}_${newIndex}", 0)
-                .apply()
             coroutineScope.launch {
-                lazyListState.scrollToItem(0, 0)
                 chapterIndex = newIndex
             }
         }
@@ -172,6 +166,33 @@ fun ReaderScreen(
                     }
                 },
                 actions = {
+                    // 單章下載按鈕（若本章未下載）
+                    if (chapter != null && !chapter.isDownloaded) {
+                        var isDownloadingThis by remember { mutableStateOf(false) }
+                        IconButton(
+                            onClick = {
+                                if (!isDownloadingThis) {
+                                    isDownloadingThis = true
+                                    coroutineScope.launch {
+                                        val result = repository.downloadSingleChapter(novelId, chapterIndex)
+                                        isDownloadingThis = false
+                                        if (result.isSuccess) {
+                                            android.widget.Toast.makeText(context, "本章下載完成！", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            android.widget.Toast.makeText(context, "下載失敗：${result.exceptionOrNull()?.message}", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            }
+                        ) {
+                            if (isDownloadingThis) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = iconTint)
+                            } else {
+                                Icon(Icons.Default.Download, contentDescription = "下載本章", tint = iconTint)
+                            }
+                        }
+                    }
+
                     // 系統語音設定跳轉（下載/選取真人女聲套件）
                     IconButton(onClick = { ttsManager.openTtsSettings() }) {
                         Icon(
@@ -335,26 +356,18 @@ fun ReaderScreen(
                 .background(backgroundColor)
         ) {
             // 進入或切換章節時的滾動控制：
-            // 初次進入本小說時，還原上次進度；而在閱讀中切換章節時，一律由最開頭（段落 0）開始閱讀
+            // 還原當前章節的歷史閱讀段落與 offset
             LaunchedEffect(chapter?.chapterIndex, paragraphs) {
                 if (paragraphs.isNotEmpty()) {
-                    if (isFirstLaunch) {
-                        val savedIdx = prefs.getInt("pos_${novelId}_${chapterIndex}", 0)
-                        val savedOffset = prefs.getInt("offset_${novelId}_${chapterIndex}", 0)
-                        if (savedIdx > 0 && savedIdx < paragraphs.size) {
-                            lazyListState.scrollToItem(savedIdx, savedOffset)
-                        } else {
-                            lazyListState.scrollToItem(0, 0)
-                        }
-                        isFirstLaunch = false
+                    val savedIdx = prefs.getInt("pos_${novelId}_${chapterIndex}", 0)
+                    val savedOffset = prefs.getInt("offset_${novelId}_${chapterIndex}", 0)
+                    if (savedIdx in 0 until paragraphs.size) {
+                        lazyListState.scrollToItem(savedIdx, savedOffset)
                     } else {
-                        // 切換下一章或上一章：一律由最開頭開始閱讀
                         lazyListState.scrollToItem(0, 0)
                     }
-                    delay(100)
-                    if (!isFirstLaunch) {
-                        lazyListState.scrollToItem(0, 0)
-                    }
+                    isFirstLaunch = false
+                    delay(50)
                     isReadyToRecord = true
                 }
             }
