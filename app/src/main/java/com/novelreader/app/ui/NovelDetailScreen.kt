@@ -99,7 +99,6 @@ fun NovelDetailScreen(
                         }
 
                         // 繼續閱讀按鈕（直接進到之前看的章節）
-                        val lastIndex = novel.lastReadChapterIndex.coerceIn(0, (chapters.size - 1).coerceAtLeast(0))
                         val readBtnText = if (!novel.lastReadChapterTitle.isNullOrBlank()) {
                             "繼續閱讀：${novel.lastReadChapterTitle}"
                         } else {
@@ -107,7 +106,7 @@ fun NovelDetailScreen(
                         }
 
                         Button(
-                            onClick = { onChapterClick(lastIndex) },
+                            onClick = { onChapterClick(-1) },
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                         ) {

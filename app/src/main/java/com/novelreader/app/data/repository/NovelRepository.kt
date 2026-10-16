@@ -32,6 +32,8 @@ class NovelRepository(private val context: Context) {
 
     fun getChaptersFlow(novelId: String): Flow<List<ChapterEntity>> = chapterDao.getChaptersFlow(novelId)
 
+    suspend fun getNovelById(novelId: String): NovelEntity? = novelDao.getNovelById(novelId)
+
     suspend fun getChapter(novelId: String, index: Int): ChapterEntity? = chapterDao.getChapterByIndex(novelId, index)
 
     suspend fun updateReadingProgress(novelId: String, chapterId: String, chapterTitle: String, chapterIndex: Int) {

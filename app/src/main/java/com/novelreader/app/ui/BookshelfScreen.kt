@@ -75,7 +75,7 @@ fun BookshelfScreen(
                 items(novels, key = { it.id }) { novel ->
                     NovelCardItem(
                         novel = novel,
-                        onClick = { onReadNovel(novel.id, novel.lastReadChapterIndex) },
+                        onClick = { onReadNovel(novel.id, -1) }, // Use -1 to indicate resume reading latest
                         onDetailClick = { onNovelClick(novel.id) },
                         onDownload = { onDownloadAll(novel.id) },
                         onDelete = { novelToDelete = novel }

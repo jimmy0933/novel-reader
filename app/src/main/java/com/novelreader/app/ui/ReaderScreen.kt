@@ -16,6 +16,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import com.novelreader.app.data.local.ChapterEntity
 
@@ -31,7 +32,7 @@ fun ReaderScreen(
     val prefs = remember { context.getSharedPreferences("reader_prefs", android.content.Context.MODE_PRIVATE) }
     val coroutineScope = rememberCoroutineScope()
 
-    var chapterIndex by remember { mutableStateOf(initialChapterIndex) }
+    var chapterIndex by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(initialChapterIndex) }
     val chapters by repository.getChaptersFlow(novelId).collectAsState(initial = emptyList())
     val chapter = chapters.find { it.chapterIndex == chapterIndex }
 
@@ -63,26 +64,29 @@ fun ReaderScreen(
 
     // 處理當前章節載入、即時下載、閱讀進度更新與背景預載後續 2 章
     LaunchedEffect(novelId, chapterIndex, retryTrigger) {
-        val currentChapter = repository.getChapter(novelId, chapterIndex)
+        val targetIndex = chapterIndex
+        val currentChapter = repository.getChapter(novelId, targetIndex)
         if (currentChapter != null) {
             if (currentChapter.isDownloaded && !currentChapter.content.isNullOrBlank()) {
                 isLoadingChapter = false
                 chapterError = null
-                repository.updateReadingProgress(novelId, currentChapter.chapterId, currentChapter.title, chapterIndex)
-                prefetchNextChapters(repository, novelId, chapterIndex)
+                if (chapterIndex == targetIndex) {
+                    repository.updateReadingProgress(novelId, currentChapter.chapterId, currentChapter.title, targetIndex)
+                }
+                prefetchNextChapters(repository, novelId, targetIndex)
             } else {
                 isLoadingChapter = true
                 chapterError = null
 
-                val result = repository.downloadSingleChapter(novelId, chapterIndex)
+                val result = repository.downloadSingleChapter(novelId, targetIndex)
                 if (result.isSuccess) {
                     isLoadingChapter = false
                     chapterError = null
-                    val updated = repository.getChapter(novelId, chapterIndex)
-                    if (updated != null) {
-                        repository.updateReadingProgress(novelId, updated.chapterId, updated.title, chapterIndex)
+                    val updated = repository.getChapter(novelId, targetIndex)
+                    if (updated != null && chapterIndex == targetIndex) {
+                        repository.updateReadingProgress(novelId, updated.chapterId, updated.title, targetIndex)
                     }
-                    prefetchNextChapters(repository, novelId, chapterIndex)
+                    prefetchNextChapters(repository, novelId, targetIndex)
                 } else {
                     isLoadingChapter = false
                     chapterError = result.exceptionOrNull()?.message ?: "章節下載失敗，請檢查網路連線"
@@ -447,30 +451,41 @@ fun ReaderScreen(
                     }
                 }
 
-                // 當手動滑動或 TTS 滾動時，即時記憶當前閱讀段落
+                val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+
+                val saveCurrentPosition by rememberUpdatedState { targetChapterIndex: Int ->
+                    if (isReadyToRecord) {
+                        val idx = lazyListState.firstVisibleItemIndex
+                        val offset = lazyListState.firstVisibleItemScrollOffset
+                        prefs.edit()
+                            .putInt("pos_${novelId}_${targetChapterIndex}", idx)
+                            .putInt("offset_${novelId}_${targetChapterIndex}", offset)
+                            .apply()
+                    }
+                }
+
+                // 當手動滑動或 TTS 滾動時，即時記憶當前閱讀段落 (debounce以避免頻繁寫入)
                 LaunchedEffect(chapterIndex) {
+                    @OptIn(kotlinx.coroutines.FlowPreview::class)
                     snapshotFlow { Pair(lazyListState.firstVisibleItemIndex, lazyListState.firstVisibleItemScrollOffset) }
-                        .collect { (idx, offset) ->
-                            if (isReadyToRecord) {
-                                prefs.edit()
-                                    .putInt("pos_${novelId}_${chapterIndex}", idx)
-                                    .putInt("offset_${novelId}_${chapterIndex}", offset)
-                                    .apply()
-                            }
+                        .debounce(500L)
+                        .collect {
+                            saveCurrentPosition(chapterIndex)
                         }
                 }
 
-                // 離開頁面時再次確保保存進度
-                DisposableEffect(novelId, chapterIndex) {
-                    onDispose {
-                        if (isReadyToRecord) {
-                            val idx = lazyListState.firstVisibleItemIndex
-                            val offset = lazyListState.firstVisibleItemScrollOffset
-                            prefs.edit()
-                                .putInt("pos_${novelId}_${chapterIndex}", idx)
-                                .putInt("offset_${novelId}_${chapterIndex}", offset)
-                                .apply()
+                DisposableEffect(lifecycleOwner, novelId, chapterIndex) {
+                    val currentChapterForDispose = chapterIndex
+                    val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                        if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP || event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) {
+                            saveCurrentPosition(currentChapterForDispose)
                         }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+
+                    onDispose {
+                        saveCurrentPosition(currentChapterForDispose)
+                        lifecycleOwner.lifecycle.removeObserver(observer)
                     }
                 }
 
