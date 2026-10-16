@@ -117,15 +117,27 @@ class MainActivity : ComponentActivity() {
                         )
                     ) { backStackEntry ->
                         val novelId = backStackEntry.arguments?.getString("novelId") ?: return@composable
-                        val chapterIndex = backStackEntry.arguments?.getInt("chapterIndex") ?: 0
-                        val chapters by repository.getChaptersFlow(novelId).collectAsState(initial = emptyList())
+                        val requestedChapterIndex = backStackEntry.arguments?.getInt("chapterIndex") ?: 0
 
-                        ReaderScreen(
-                            novelId = novelId,
-                            initialChapterIndex = chapterIndex,
-                            repository = repository,
-                            onBack = { navController.popBackStack() }
-                        )
+                        var resolvedChapterIndex by remember { mutableStateOf<Int?>(null) }
+
+                        LaunchedEffect(novelId, requestedChapterIndex) {
+                            val novel = repository.getNovelById(novelId)
+                            if (novel != null) {
+                                resolvedChapterIndex = if (requestedChapterIndex == -1) novel.lastReadChapterIndex else requestedChapterIndex
+                            } else {
+                                resolvedChapterIndex = requestedChapterIndex
+                            }
+                        }
+
+                        if (resolvedChapterIndex != null) {
+                            ReaderScreen(
+                                novelId = novelId,
+                                initialChapterIndex = resolvedChapterIndex!!,
+                                repository = repository,
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
                     }
 
                     // 4. 內建瀏覽器
