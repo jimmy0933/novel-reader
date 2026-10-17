@@ -13,6 +13,9 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Sort
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +31,8 @@ import com.novelreader.app.data.local.NovelEntity
 import com.novelreader.app.ui.components.NovelCoverPlaceholder
 import kotlinx.coroutines.launch
 
+import androidx.compose.ui.platform.LocalContext
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NovelDetailScreen(
@@ -39,16 +44,60 @@ fun NovelDetailScreen(
     onSyncLatestChapters: () -> Unit,
     onDownloadSingleChapter: (Int) -> Unit = {}
 ) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("novel_prefs", android.content.Context.MODE_PRIVATE) }
     var isSyncing by remember { mutableStateOf(false) }
     var downloadingChapterIndices by remember { mutableStateOf(setOf<Int>()) }
+    var isReversed by remember { mutableStateOf(false) }
+
+    val workManager = androidx.work.WorkManager.getInstance(context)
+    val novelId = novel?.id ?: ""
+    val workInfoState = workManager.getWorkInfosByTagFlow("DOWNLOAD_$novelId").collectAsState(initial = emptyList())
+    val workInfo = workInfoState.value.firstOrNull()
+    val workerState = workInfo?.state
+    val isWaiting = workerState == androidx.work.WorkInfo.State.ENQUEUED
+    val isFailed = workerState == androidx.work.WorkInfo.State.FAILED
+    val isWorkerDownloading = workerState == androidx.work.WorkInfo.State.RUNNING
+
+    val workerProgressData = workInfo?.progress
+    val currentWorkerChapter = workerProgressData?.getString("CURRENT_CHAPTER")
+    val workerOverallSuccess = workerProgressData?.getInt("SUCCESS_COUNT", 0) ?: 0
+    val workerOverallFailed = workerProgressData?.getInt("FAILED_COUNT", 0) ?: 0
+
+    LaunchedEffect(novel?.id) {
+        if (novel != null) {
+            isReversed = prefs.getBoolean("is_reversed_${novel.id}", false)
+        }
+    }
 
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    LaunchedEffect(novel, chapters.size) {
-        if (novel != null && chapters.isNotEmpty()) {
-            val targetIdx = novel.lastReadChapterIndex.coerceIn(0, chapters.size - 1)
-            listState.scrollToItem(targetIdx + 1) // +1 for the header item
+    val sortedChapters = remember(chapters, isReversed) {
+        if (isReversed) chapters.reversed() else chapters
+    }
+
+    var isFirstLoad by remember { mutableStateOf(true) }
+
+    LaunchedEffect(novel, sortedChapters.size) {
+        if (isFirstLoad && novel != null && sortedChapters.isNotEmpty()) {
+            val targetIdx = sortedChapters.indexOfFirst { it.chapterIndex == novel.lastReadChapterIndex }
+            if (targetIdx >= 0) {
+                listState.scrollToItem(targetIdx + 1) // +1 for the header item
+            }
+            isFirstLoad = false
+        }
+    }
+
+    // When reversing the list, attempt to keep the first visible chapter in view
+    LaunchedEffect(isReversed) {
+        if (!isFirstLoad && sortedChapters.isNotEmpty()) {
+            val visibleIndex = listState.firstVisibleItemIndex
+            if (visibleIndex > 0) {
+                // Approximate position in the reversed list
+                val newIndex = (sortedChapters.size - visibleIndex + 1).coerceIn(1, sortedChapters.size)
+                listState.scrollToItem(newIndex, listState.firstVisibleItemScrollOffset)
+            }
         }
     }
 
@@ -159,11 +208,33 @@ fun NovelDetailScreen(
 
                         if (novel.intro.isNotBlank()) {
                             Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                text = "簡介",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "簡介",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                var showDiagnosticDialog by remember { mutableStateOf(false) }
+                                TextButton(onClick = { showDiagnosticDialog = true }) {
+                                    Text("下載診斷")
+                                }
+
+                                if (showDiagnosticDialog) {
+                                    AlertDialog(
+                                        onDismissRequest = { showDiagnosticDialog = false },
+                                        title = { Text("下載診斷紀錄") },
+                                        text = {
+                                            // Put it in a scrollable column in case it's long
+                                            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                                                Text(com.novelreader.app.utils.DiagnosticLogger.readLogs(context))
+                                            }
+                                        },
+                                        confirmButton = {
+                                            TextButton(onClick = { showDiagnosticDialog = false }) { Text("關閉") }
+                                        }
+                                    )
+                                }
+                            }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = novel.intro,
@@ -183,10 +254,20 @@ fun NovelDetailScreen(
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onBackground
                             )
-                            TextButton(onClick = onDownloadAll) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("下載全部")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = {
+                                    isReversed = !isReversed
+                                    novel.id.let { prefs.edit().putBoolean("is_reversed_$it", isReversed).apply() }
+                                }) {
+                                    Icon(androidx.compose.material.icons.Icons.Default.Sort, contentDescription = "排序", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(if (isReversed) "倒序" else "正序")
+                                }
+                                TextButton(onClick = onDownloadAll) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("下載全部")
+                                }
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
@@ -194,9 +275,17 @@ fun NovelDetailScreen(
                 }
 
                 // 章節列表
-                items(chapters, key = { it.chapterIndex }) { chapter ->
+                items(sortedChapters, key = { it.chapterIndex }) { chapter ->
                     val isDownloading = downloadingChapterIndices.contains(chapter.chapterIndex)
                     val isCurrentChapter = chapter.chapterIndex == novel.lastReadChapterIndex
+
+                    // Check if this specific chapter is being downloaded by the worker
+                    val isThisChapterWorkerDownloading = isWorkerDownloading && currentWorkerChapter == chapter.title
+
+                    // If the worker has failed chapters and is no longer running, or is waiting
+                    val isWorkerBatchFailed = isFailed || workerOverallFailed > 0
+
+                    val isCurrentlyDownloading = isDownloading || isThisChapterWorkerDownloading
 
                     Row(
                         modifier = Modifier
@@ -222,11 +311,28 @@ fun NovelDetailScreen(
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp)
                             )
-                        } else if (isDownloading) {
+                        } else if (isCurrentlyDownloading) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(20.dp),
                                 strokeWidth = 2.dp
                             )
+                        } else if (isWaiting) {
+                            Text("等待系統排程", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        } else if (isWorkerBatchFailed && !isWorkerDownloading) {
+                            IconButton(
+                                onClick = {
+                                    downloadingChapterIndices = downloadingChapterIndices + chapter.chapterIndex
+                                    onDownloadSingleChapter(chapter.chapterIndex)
+                                },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Download,
+                                    contentDescription = "失敗可重試",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         } else {
                             IconButton(
                                 onClick = {

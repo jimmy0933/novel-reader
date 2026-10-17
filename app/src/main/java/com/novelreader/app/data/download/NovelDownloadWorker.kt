@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
+import com.novelreader.app.utils.DiagnosticLogger
 
 class NovelDownloadWorker(
     private val context: Context,
@@ -115,6 +116,8 @@ class NovelDownloadWorker(
             var hasMorePending = true
             var overallSuccess = 0
             var overallFailed = 0
+            val failedChaptersIndices = mutableListOf<Int>()
+            var retryCount = runAttemptCount
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val notificationId = NOTIFICATION_ID_OFFSET + novelId.hashCode()
 
@@ -176,14 +179,13 @@ class NovelDownloadWorker(
                         overallSuccess++
                     } else {
                         overallFailed++
+                        failedChaptersIndices.add(chapter.chapterIndex)
                     }
 
                     delay(300)
                 }
 
-                // Break loop after one pass of pending chapters,
-                // if there are failures, they will be left as pending for next manual retry,
-                // we don't infinite loop on failures.
+                // Let the worker finish and use Result.retry() for proper backoff
                 break
             }
 
@@ -209,9 +211,30 @@ class NovelDownloadWorker(
                 e.printStackTrace()
             }
 
-            return@withContext if (overallFailed > 0 && overallSuccess == 0) {
-                // If all failed in this batch, we might want to retry
+            DiagnosticLogger.log(
+                context,
+                id.toString(),
+                novelId,
+                if (isStopped) "STOPPED" else if (overallFailed == 0) "SUCCESS" else "PARTIAL_SUCCESS",
+                if (isStopped) "Worker was stopped by OS/User" else "Completed pass",
+                failedChaptersIndices,
+                retryCount
+            )
+
+            return@withContext if (overallFailed > 0 && !isStopped && runAttemptCount < 5) {
+                // Retry if any failed, limited to 5 attempts
                 Result.retry()
+            } else if (isStopped) {
+                // Need to restart later if it was stopped prematurely
+                Result.retry()
+            } else if (overallFailed > 0) {
+                // We reached max retries but still have failures. Leave pending, report failure.
+                Result.failure(
+                    workDataOf(
+                        "SUCCESS_COUNT" to overallSuccess,
+                        "FAILED_COUNT" to overallFailed
+                    )
+                )
             } else {
                 Result.success(
                     workDataOf(
