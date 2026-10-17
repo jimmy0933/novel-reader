@@ -72,6 +72,8 @@ class NovelRepository(private val context: Context) {
 
         try {
             deferred.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -136,6 +138,7 @@ class NovelRepository(private val context: Context) {
                     return Result.success(Unit)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 lastException = e
                 if (attempt < maxAttempts) {
                     delay(500L * attempt)
@@ -276,7 +279,7 @@ class NovelRepository(private val context: Context) {
         // it appends. Actually, KEEP is better so we don't start duplicate jobs.
         workManager.enqueueUniqueWork(
             "DOWNLOAD_$novelId",
-            ExistingWorkPolicy.KEEP,
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
             workRequest
         )
     }
