@@ -16,6 +16,7 @@ import androidx.navigation.navArgument
 import com.novelreader.app.data.local.ChapterEntity
 import com.novelreader.app.data.local.NovelEntity
 import com.novelreader.app.ui.*
+import com.novelreader.app.ui.theme.NovelReaderTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -26,7 +27,7 @@ class MainActivity : ComponentActivity() {
         val repository = app.repository
 
         setContent {
-            MaterialTheme {
+            NovelReaderTheme {
                 val navController = rememberNavController()
                 val novels by repository.getAllNovels().collectAsState(initial = emptyList())
 

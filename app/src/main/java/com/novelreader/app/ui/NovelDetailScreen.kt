@@ -1,9 +1,12 @@
 package com.novelreader.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
@@ -14,10 +17,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import com.novelreader.app.data.local.ChapterEntity
 import com.novelreader.app.data.local.NovelEntity
+import com.novelreader.app.ui.components.NovelCoverPlaceholder
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,15 +42,23 @@ fun NovelDetailScreen(
     var isSyncing by remember { mutableStateOf(false) }
     var downloadingChapterIndices by remember { mutableStateOf(setOf<Int>()) }
 
+    val coroutineScope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(novel, chapters.size) {
+        if (novel != null && chapters.isNotEmpty()) {
+            val targetIdx = novel.lastReadChapterIndex.coerceIn(0, chapters.size - 1)
+            listState.scrollToItem(targetIdx + 1) // +1 for the header item
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        text = novel?.title ?: "作品詳情",
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        text = "作品詳情",
+                        style = MaterialTheme.typography.titleLarge
                     )
                 },
                 navigationIcon = {
@@ -60,9 +77,6 @@ fun NovelDetailScreen(
                     ) {
                         Icon(Icons.Default.Sync, contentDescription = "同步最新章節")
                     }
-                    IconButton(onClick = onDownloadAll) {
-                        Icon(Icons.Default.Download, contentDescription = "下載整部小說")
-                    }
                 }
             )
         }
@@ -72,135 +86,168 @@ fun NovelDetailScreen(
                 CircularProgressIndicator()
             }
         } else {
-            Column(
+            LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
+                    .background(MaterialTheme.colorScheme.background),
+                contentPadding = PaddingValues(bottom = 80.dp) // Provide some padding at bottom
             ) {
-                // 小說簡介區域
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(text = novel.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(text = "作者：${novel.author}", style = MaterialTheme.typography.bodyMedium)
-                        Spacer(modifier = Modifier.height(8.dp))
+                // 小說簡介區域 (Header)
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            // Cover
+                            Box(
+                                modifier = Modifier
+                                    .width(100.dp)
+                                    .aspectRatio(0.7f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                if (novel.coverUrl.isNotBlank()) {
+                                    AsyncImage(
+                                        model = novel.coverUrl,
+                                        contentDescription = "封面",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    NovelCoverPlaceholder()
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+
+                            // Info
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = novel.title,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = novel.author.ifBlank { "未知作者" },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                val readBtnText = if (!novel.lastReadChapterTitle.isNullOrBlank()) {
+                                    "繼續閱讀"
+                                } else {
+                                    "開始閱讀"
+                                }
+
+                                Button(
+                                    onClick = { onChapterClick(-1) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.MenuBook, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(readBtnText)
+                                }
+                            }
+                        }
+
                         if (novel.intro.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "簡介",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = novel.intro,
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 4
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
                         }
 
-                        // 繼續閱讀按鈕（直接進到之前看的章節）
-                        val readBtnText = if (!novel.lastReadChapterTitle.isNullOrBlank()) {
-                            "繼續閱讀：${novel.lastReadChapterTitle}"
-                        } else {
-                            "開始閱讀第一章"
-                        }
-
-                        Button(
-                            onClick = { onChapterClick(-1) },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) {
-                            Icon(Icons.Default.MenuBook, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(readBtnText, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
+                        Spacer(modifier = Modifier.height(16.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = onDownloadAll,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("下載 (${novel.downloadedChapters}/${novel.totalChapters})")
-                            }
-
-                            OutlinedButton(
-                                onClick = onSyncLatestChapters,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("同步更新")
-                            }
-                        }
-                    }
-                }
-
-                Text(
-                    text = "章節目錄 (共 ${chapters.size} 章)",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                )
-
-                // 章節列表
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    items(chapters, key = { it.chapterIndex }) { chapter ->
-                        val isDownloading = downloadingChapterIndices.contains(chapter.chapterIndex)
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onChapterClick(chapter.chapterIndex) }
-                                .padding(vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = chapter.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.weight(1f)
+                                text = "目錄 (${chapters.size} 章)",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onBackground
                             )
-                            if (chapter.isDownloaded) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = "已離線",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            } else if (isDownloading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                IconButton(
-                                    onClick = {
-                                        downloadingChapterIndices = downloadingChapterIndices + chapter.chapterIndex
-                                        onDownloadSingleChapter(chapter.chapterIndex)
-                                    },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Download,
-                                        contentDescription = "單選下載本章",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
+                            TextButton(onClick = onDownloadAll) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("下載全部")
                             }
                         }
-                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
+                }
+
+                // 章節列表
+                items(chapters, key = { it.chapterIndex }) { chapter ->
+                    val isDownloading = downloadingChapterIndices.contains(chapter.chapterIndex)
+                    val isCurrentChapter = chapter.chapterIndex == novel.lastReadChapterIndex
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onChapterClick(chapter.chapterIndex) }
+                            .background(if (isCurrentChapter) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else Color.Transparent)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = chapter.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isCurrentChapter) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+                            fontWeight = if (isCurrentChapter) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        if (chapter.isDownloaded) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = "已離線",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        } else if (isDownloading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    downloadingChapterIndices = downloadingChapterIndices + chapter.chapterIndex
+                                    onDownloadSingleChapter(chapter.chapterIndex)
+                                },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Download,
+                                    contentDescription = "下載",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    )
                 }
             }
         }

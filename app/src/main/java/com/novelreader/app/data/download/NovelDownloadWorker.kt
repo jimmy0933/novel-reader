@@ -88,10 +88,10 @@ class NovelDownloadWorker(
         }
     }
 
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val novelId = inputData.getString("NOVEL_ID") ?: return@withContext Result.failure()
 
-        // 取得 PowerManager WakeLock 以確保螢幕鎖定 (Lock Screen) 時 CPU 保持運作不中斷下載
+        // Get PowerManager WakeLock
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
         val wakeLock = powerManager?.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
@@ -100,108 +100,107 @@ class NovelDownloadWorker(
 
         try {
             wakeLock?.acquire(60 * 60 * 1000L /* 1 hour timeout */)
-
             createNotificationChannel()
 
             val novel = db.novelDao().getNovelById(novelId)
             val novelTitle = novel?.title ?: "作品"
 
-            // 嘗試設為 Foreground Service，以防背景被系統砍掉，若受限則捕捉異常繼續下載
             try {
                 setForeground(getForegroundInfo())
             } catch (e: Exception) {
                 e.printStackTrace()
             }
 
-            val pendingChapters = db.chapterDao().getPendingDownloadChapters(novelId)
-            val total = pendingChapters.size
-
-            if (total == 0) {
-                db.novelDao().refreshDownloadedCount(novelId)
-                return@withContext Result.success(
-                    workDataOf(
-                        "SUCCESS_COUNT" to 0,
-                        "FAILED_COUNT" to 0,
-                        "TOTAL" to 0
-                    )
-                )
-            }
-
-            val notificationManager =
-                context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            // Retry until no pending chapters
+            var hasMorePending = true
+            var overallSuccess = 0
+            var overallFailed = 0
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val notificationId = NOTIFICATION_ID_OFFSET + novelId.hashCode()
 
             val app = context.applicationContext as? com.novelreader.app.NovelApplication
             val repository = app?.repository
 
-            var successCount = 0
-            var failedCount = 0
-
-            for ((index, chapter) in pendingChapters.withIndex()) {
+            while (hasMorePending) {
                 if (isStopped) {
-                    // 使用者暫停或系統取消下載
                     return@withContext Result.retry()
                 }
 
-                val currentStep = index + 1
-                val progressText = "[$currentStep/$total] $novelTitle - ${chapter.title}"
+                val pendingChapters = db.chapterDao().getPendingDownloadChapters(novelId)
+                val total = db.chapterDao().getChapters(novelId).size
+                val pendingCount = pendingChapters.size
 
-                // 更新通知與 WorkManager 進度
-                try {
-                    notificationManager.notify(
-                        notificationId,
-                        createNotification(progressText, currentStep, total)
-                    )
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                if (pendingCount == 0) {
+                    hasMorePending = false
+                    break
                 }
 
-                try {
-                    setProgress(
-                        workDataOf(
-                            "PROGRESS" to currentStep,
-                            "TOTAL" to total,
-                            "CURRENT_CHAPTER" to chapter.title,
-                            "SUCCESS_COUNT" to successCount,
-                            "FAILED_COUNT" to failedCount
+                for ((index, chapter) in pendingChapters.withIndex()) {
+                    if (isStopped) {
+                        return@withContext Result.retry()
+                    }
+
+                    val currentStep = total - pendingCount + index + 1
+                    val progressText = "[$currentStep/$total] $novelTitle - ${chapter.title}"
+
+                    try {
+                        notificationManager.notify(
+                            notificationId,
+                            createNotification(progressText, currentStep, total)
                         )
-                    )
-                } catch (e: Exception) {
-                    e.printStackTrace()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    try {
+                        setProgress(
+                            workDataOf(
+                                "PROGRESS" to currentStep,
+                                "TOTAL" to total,
+                                "CURRENT_CHAPTER" to chapter.title,
+                                "SUCCESS_COUNT" to overallSuccess,
+                                "FAILED_COUNT" to overallFailed
+                            )
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    val downloadResult = if (repository != null) {
+                        repository.downloadSingleChapter(novelId, chapter.chapterIndex)
+                    } else {
+                        kotlin.Result.failure(IllegalStateException("NovelRepository 未初始化"))
+                    }
+
+                    if (downloadResult.isSuccess) {
+                        overallSuccess++
+                    } else {
+                        overallFailed++
+                    }
+
+                    delay(300)
                 }
 
-                // 使用統一 Repository 下載邏輯，自動與即時閱讀／預載去重並依據相同標準驗證
-                val downloadResult: kotlin.Result<Unit> = if (repository != null) {
-                    repository.downloadSingleChapter(novelId, chapter.chapterIndex)
-                } else {
-                    kotlin.Result.failure(IllegalStateException("NovelRepository 未初始化"))
-                }
-
-                if (downloadResult.isSuccess) {
-                    successCount++
-                } else {
-                    failedCount++
-                }
-
-                // 章節間的溫和爬取間隔
-                delay(300)
+                // Break loop after one pass of pending chapters,
+                // if there are failures, they will be left as pending for next manual retry,
+                // we don't infinite loop on failures.
+                break
             }
 
             db.novelDao().refreshDownloadedCount(novelId)
 
-            // 下載結束，依據成功與失敗數量顯示正確結果通知
             try {
-                val completionText = if (failedCount == 0) {
-                    "《$novelTitle》離線下載完成 (共 $total 章)"
+                val completionText = if (overallFailed == 0) {
+                    "《$novelTitle》離線下載完成"
                 } else {
-                    "《$novelTitle》下載完成：成功 $successCount 章，失敗 $failedCount 章 (可再次點擊下載重試)"
+                    "《$novelTitle》下載完成：成功 $overallSuccess 章，失敗 $overallFailed 章 (可再次點擊下載重試)"
                 }
 
                 val completedNotification = NotificationCompat.Builder(context, CHANNEL_ID)
-                    .setContentTitle(if (failedCount == 0) "下載完成" else "下載部分完成")
+                    .setContentTitle(if (overallFailed == 0) "下載完成" else "下載部分完成")
                     .setContentText(completionText)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(completionText))
-                    .setSmallIcon(if (failedCount == 0) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
+                    .setSmallIcon(if (overallFailed == 0) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
                     .setAutoCancel(true)
                     .build()
 
@@ -210,13 +209,17 @@ class NovelDownloadWorker(
                 e.printStackTrace()
             }
 
-            Result.success(
-                workDataOf(
-                    "SUCCESS_COUNT" to successCount,
-                    "FAILED_COUNT" to failedCount,
-                    "TOTAL" to total
+            return@withContext if (overallFailed > 0 && overallSuccess == 0) {
+                // If all failed in this batch, we might want to retry
+                Result.retry()
+            } else {
+                Result.success(
+                    workDataOf(
+                        "SUCCESS_COUNT" to overallSuccess,
+                        "FAILED_COUNT" to overallFailed
+                    )
                 )
-            )
+            }
         } finally {
             if (wakeLock?.isHeld == true) {
                 try {
@@ -226,5 +229,4 @@ class NovelDownloadWorker(
                 }
             }
         }
-    }
-}
+    }}

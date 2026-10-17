@@ -2,13 +2,24 @@ package com.novelreader.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,6 +57,10 @@ fun ReaderScreen(
     var isFirstLaunch by remember { mutableStateOf(true) }
     var isReadyToRecord by remember { mutableStateOf(false) }
     val lazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+    // UI 相關狀態
+    var showBars by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     fun switchChapter(newIndex: Int) {
         if (newIndex >= 0 && (chapters.isEmpty() || newIndex < chapters.size)) {
@@ -119,6 +134,10 @@ fun ReaderScreen(
         mutableStateOf(prefs.getFloat("tts_speech_rate", 1.0f))
     }
 
+    var lineHeightMult by remember {
+        mutableStateOf(prefs.getFloat("line_height", 1.8f))
+    }
+
     // 將章節內容按行切分成段落（段落 0 為標題）
     val paragraphs = remember(chapter?.title, chapter?.content) {
         val list = mutableListOf<String>()
@@ -176,14 +195,23 @@ fun ReaderScreen(
         }
     }
 
-    val backgroundColor = if (isNightMode) Color(0xFF181818) else Color(0xFFF9F7F1) // 舒適羊皮紙/深黑夜間底色
-    val barColor = if (isNightMode) Color(0xFF222222) else Color(0xFFFFFFFF)
-    val contentColor = if (isNightMode) Color(0xFFE0E0E0) else Color(0xFF2C2C2C)
+    // 根據主題設定背景色（羊皮紙/米白/深黑）
+    val bgTheme = prefs.getString("bg_theme", "white")
+    val backgroundColor = if (isNightMode) MaterialTheme.colorScheme.background else if (bgTheme == "beige") Color(0xFFF9F6ED) else Color.White
+    val barColor = MaterialTheme.colorScheme.surface
+    val contentColor = if (isNightMode) MaterialTheme.colorScheme.onBackground else Color(0xFF2C2C2C)
     val iconTint = if (isNightMode) Color(0xFFCCCCCC) else Color(0xFF444444)
+
+    val interactionSource = remember { MutableInteractionSource() }
 
     Scaffold(
         containerColor = backgroundColor,
         topBar = {
+            AnimatedVisibility(
+                visible = showBars,
+                enter = slideInVertically(initialOffsetY = { -it }),
+                exit = slideOutVertically(targetOffsetY = { -it })
+            ) {
             TopAppBar(
                 title = {
                     Text(
@@ -196,7 +224,7 @@ fun ReaderScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回目錄", tint = iconTint)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回目錄", tint = iconTint)
                     }
                 },
                 actions = {
@@ -212,52 +240,6 @@ fun ReaderScreen(
                             }
                         }
                     }
-
-                    // 系統語音設定跳轉（下載/選取真人女聲套件）
-                    IconButton(onClick = { ttsManager.openTtsSettings() }) {
-                        Icon(
-                            Icons.Default.SettingsVoice,
-                            contentDescription = "語音設定（下載女聲）",
-                            tint = iconTint
-                        )
-                    }
-
-                    // 語音朗讀切換
-                    IconButton(onClick = {
-                        if (ttsManager.isSpeaking) {
-                            ttsManager.stop()
-                        } else {
-                            if (paragraphs.isNotEmpty()) {
-                                val currentVisibleIdx = lazyListState.firstVisibleItemIndex.coerceIn(0, (paragraphs.size - 1).coerceAtLeast(0))
-                                ttsManager.speakParagraphs(paragraphs, currentVisibleIdx)
-                            } else {
-                                android.widget.Toast.makeText(context, "本章尚無內容可朗讀，請先下載！", android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }) {
-                        Icon(
-                            if (ttsManager.isSpeaking) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
-                            contentDescription = "語音朗讀",
-                            tint = if (ttsManager.isSpeaking) MaterialTheme.colorScheme.primary else iconTint
-                        )
-                    }
-
-                    // 切換字級縮小
-                    IconButton(onClick = { if (fontSize > 12) updateFontSize(fontSize - 2) }) {
-                        Icon(Icons.Default.TextDecrease, contentDescription = "縮小字體", tint = iconTint)
-                    }
-                    // 切換字級放大
-                    IconButton(onClick = { if (fontSize < 36) updateFontSize(fontSize + 2) }) {
-                        Icon(Icons.Default.TextIncrease, contentDescription = "放大字體", tint = iconTint)
-                    }
-                    // 夜間/日間模式
-                    IconButton(onClick = { updateNightMode(!isNightMode) }) {
-                        Icon(
-                            if (isNightMode) Icons.Default.LightMode else Icons.Default.DarkMode,
-                            contentDescription = "切換夜間模式",
-                            tint = if (isNightMode) Color(0xFFFFD54F) else iconTint
-                        )
-                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = barColor,
@@ -266,8 +248,14 @@ fun ReaderScreen(
                     actionIconContentColor = iconTint
                 )
             )
+            }
         },
         bottomBar = {
+            AnimatedVisibility(
+                visible = showBars,
+                enter = slideInVertically(initialOffsetY = { it }),
+                exit = slideOutVertically(targetOffsetY = { it })
+            ) {
             BottomAppBar(
                 containerColor = barColor,
                 contentColor = contentColor
@@ -287,71 +275,20 @@ fun ReaderScreen(
                             disabledContentColor = if (isNightMode) Color(0xFF555555) else Color.LightGray
                         )
                     ) {
-                        Icon(Icons.Default.NavigateBefore, contentDescription = null)
+                        Icon(Icons.AutoMirrored.Filled.NavigateBefore, contentDescription = null)
                         Text("上一章")
                     }
 
-                    // 朗讀控制區域：播放/暫停按鈕 + 4種女聲循環切換 + 語速按鈕
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        FilledTonalButton(
-                            onClick = {
-                                if (ttsManager.isSpeaking) {
-                                    ttsManager.stop()
-                                } else {
-                                    if (paragraphs.isNotEmpty()) {
-                                        val currentVisibleIdx = lazyListState.firstVisibleItemIndex.coerceIn(0, (paragraphs.size - 1).coerceAtLeast(0))
-                                        ttsManager.speakParagraphs(paragraphs, currentVisibleIdx)
-                                    } else {
-                                        android.widget.Toast.makeText(context, "本章尚無內容可朗讀，請先下載！", android.widget.Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                            modifier = Modifier.height(36.dp)
-                        ) {
-                            Icon(
-                                if (ttsManager.isSpeaking) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = if (ttsManager.isSpeaking) "暫停" else "朗讀",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                    IconButton(onClick = { onBack() }) {
+                        Icon(Icons.Default.MenuBook, contentDescription = "目錄")
+                    }
 
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "設定")
+                    }
 
-
-                        // 語速切換按鈕 (0.8x -> 1.0x -> 1.25x -> 1.5x)
-                        OutlinedButton(
-                            onClick = {
-                                val nextRate = when {
-                                    speechRate < 0.95f -> 1.0f
-                                    speechRate < 1.15f -> 1.25f
-                                    speechRate < 1.45f -> 1.5f
-                                    else -> 0.8f
-                                }
-                                speechRate = nextRate
-                                prefs.edit().putFloat("tts_speech_rate", nextRate).apply()
-                                ttsManager.updateSpeechRate(nextRate)
-                            },
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = if (isNightMode) Color(0xFFE0E0E0) else Color(0xFF333333)
-                            ),
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                            modifier = Modifier.height(36.dp)
-                        ) {
-                            Text(
-                                text = "${speechRate}x",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
+                    IconButton(onClick = { updateNightMode(!isNightMode) }) {
+                        Icon(if (isNightMode) Icons.Default.LightMode else Icons.Default.DarkMode, contentDescription = "切換夜間模式")
                     }
 
                     TextButton(
@@ -363,9 +300,10 @@ fun ReaderScreen(
                         )
                     ) {
                         Text("下一章")
-                        Icon(Icons.Default.NavigateNext, contentDescription = null)
+                        Icon(Icons.AutoMirrored.Filled.NavigateNext, contentDescription = null)
                     }
                 }
+            }
             }
         }
     ) { padding ->
@@ -374,6 +312,10 @@ fun ReaderScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .background(backgroundColor)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null
+                ) { showBars = !showBars }
         ) {
             if (isLoadingChapter) {
                 Column(
@@ -493,9 +435,9 @@ fun ReaderScreen(
                 val highlightColor = if (isNightMode) Color(0xFFFFD54F) else Color(0xFFE65100) // 高亮文字加強
 
                 val textFontSize = fontSize.sp
-                val textLineHeight = (fontSize * 1.6).sp
+                val textLineHeight = (fontSize * lineHeightMult).sp
                 val titleFontSize = (fontSize + 4).sp
-                val titleLineHeight = ((fontSize + 4) * 1.4).sp
+                val titleLineHeight = ((fontSize + 4) * lineHeightMult).sp
 
                 val currentPlayingIdx = ttsManager.currentParagraphIndex
 
@@ -541,7 +483,7 @@ fun ReaderScreen(
                                 ) {
                                     Text("進入下一章")
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Icon(Icons.Default.NavigateNext, contentDescription = null)
+                                    Icon(Icons.AutoMirrored.Filled.NavigateNext, contentDescription = null)
                                 }
                             } else {
                                 Text(
@@ -550,6 +492,156 @@ fun ReaderScreen(
                                     color = MaterialTheme.colorScheme.outline
                                 )
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showSettings) {
+            ModalBottomSheet(
+                onDismissRequest = { showSettings = false },
+                containerColor = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp)
+                        .padding(bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text("外觀與排版", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+
+                    // 背景主題選擇
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { updateNightMode(false); prefs.edit().putString("bg_theme", "white").apply() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (!isNightMode && prefs.getString("bg_theme", "white") == "white") MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                            )
+                        ) {
+                            Text("白色")
+                        }
+                        OutlinedButton(
+                            onClick = { updateNightMode(false); prefs.edit().putString("bg_theme", "beige").apply() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (!isNightMode && prefs.getString("bg_theme", "white") == "beige") MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                            )
+                        ) {
+                            Text("米色")
+                        }
+                        OutlinedButton(
+                            onClick = { updateNightMode(true) },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (isNightMode) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                            )
+                        ) {
+                            Text("深色")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // 字體大小
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("字體大小", style = MaterialTheme.typography.bodyMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { if (fontSize > 12) updateFontSize(fontSize - 2) }) {
+                                Icon(Icons.Default.TextDecrease, contentDescription = "縮小")
+                            }
+                            Text("$fontSize", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(horizontal = 8.dp))
+                            IconButton(onClick = { if (fontSize < 36) updateFontSize(fontSize + 2) }) {
+                                Icon(Icons.Default.TextIncrease, contentDescription = "放大")
+                            }
+                        }
+                    }
+
+                    // 行距
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("行距", style = MaterialTheme.typography.bodyMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = {
+                                if (lineHeightMult > 1.2f) {
+                                    val newVal = lineHeightMult - 0.2f
+                                    lineHeightMult = newVal
+                                    prefs.edit().putFloat("line_height", newVal).apply()
+                                }
+                            }) {
+                                Icon(Icons.Default.Remove, contentDescription = "縮小")
+                            }
+                            Text(String.format("%.1f", lineHeightMult), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(horizontal = 8.dp))
+                            IconButton(onClick = {
+                                if (lineHeightMult < 3.0f) {
+                                    val newVal = lineHeightMult + 0.2f
+                                    lineHeightMult = newVal
+                                    prefs.edit().putFloat("line_height", newVal).apply()
+                                }
+                            }) {
+                                Icon(Icons.Default.Add, contentDescription = "放大")
+                            }
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Text("語音朗讀設定", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        FilledTonalButton(
+                            onClick = {
+                                if (ttsManager.isSpeaking) {
+                                    ttsManager.stop()
+                                } else {
+                                    if (paragraphs.isNotEmpty()) {
+                                        val currentVisibleIdx = lazyListState.firstVisibleItemIndex.coerceIn(0, (paragraphs.size - 1).coerceAtLeast(0))
+                                        ttsManager.speakParagraphs(paragraphs, currentVisibleIdx)
+                                    } else {
+                                        android.widget.Toast.makeText(context, "本章尚無內容可朗讀，請先下載！", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                if (ttsManager.isSpeaking) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = null
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (ttsManager.isSpeaking) "暫停" else "朗讀")
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val nextRate = when {
+                                    speechRate < 0.95f -> 1.0f
+                                    speechRate < 1.15f -> 1.25f
+                                    speechRate < 1.45f -> 1.5f
+                                    else -> 0.8f
+                                }
+                                speechRate = nextRate
+                                prefs.edit().putFloat("tts_speech_rate", nextRate).apply()
+                                ttsManager.updateSpeechRate(nextRate)
+                            }
+                        ) {
+                            Text("語速: ${speechRate}x")
                         }
                     }
                 }

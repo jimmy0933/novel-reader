@@ -2,6 +2,8 @@ package com.novelreader.app.data.repository
 
 import android.content.Context
 import androidx.work.*
+import androidx.work.OutOfQuotaPolicy
+import androidx.work.BackoffPolicy
 import com.novelreader.app.data.download.NovelDownloadWorker
 import com.novelreader.app.data.local.AppDatabase
 import com.novelreader.app.data.local.ChapterEntity
@@ -262,11 +264,19 @@ class NovelRepository(private val context: Context) {
                     .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build()
             )
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .setBackoffCriteria(
+                BackoffPolicy.LINEAR,
+                10,
+                java.util.concurrent.TimeUnit.SECONDS
+            )
             .build()
 
+        // Use APPEND_OR_REPLACE so if there is an existing download for this novel,
+        // it appends. Actually, KEEP is better so we don't start duplicate jobs.
         workManager.enqueueUniqueWork(
             "DOWNLOAD_$novelId",
-            ExistingWorkPolicy.REPLACE,
+            ExistingWorkPolicy.KEEP,
             workRequest
         )
     }
