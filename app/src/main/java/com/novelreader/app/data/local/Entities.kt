@@ -20,7 +20,7 @@ data class NovelEntity(
     val isFavorite: Boolean = true
 )
 
-@Entity(tableName = "chapters", primaryKeys = ["novelId", "chapterIndex"])
+@Entity(tableName = "chapters", primaryKeys = ["novelId", "chapterId"])
 data class ChapterEntity(
     val novelId: String,
     val chapterIndex: Int,

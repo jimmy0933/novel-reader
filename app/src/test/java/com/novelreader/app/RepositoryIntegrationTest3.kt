@@ -22,6 +22,7 @@ import okhttp3.mockwebserver.MockResponse
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+
 @Config(application = NovelApplication::class)
 class RepositoryIntegrationTest3 {
 
@@ -112,11 +113,17 @@ class RepositoryIntegrationTest3 {
         assertTrue(result.isSuccess)
         assertEquals(1, result.getOrNull())
 
-        val dbChapters = db.chapterDao().getChapters(novelId)
+        val dbChapters = db.chapterDao().getChapters(novelId).sortedBy { it.chapterIndex }
         assertEquals(3, dbChapters.size)
-        // Check new chapter has index 2 (maxExistingIndex + 1)
+
+        // Ensure new chapter is inserted in the middle with index 1
         val newChap = dbChapters.find { it.url == "http://test/1" }
         assertNotNull(newChap)
-        assertEquals(2, newChap?.chapterIndex)
+        assertEquals(1, newChap?.chapterIndex)
+
+        // Ensure chapter 2 is pushed to index 2
+        val chapter2 = dbChapters.find { it.url == "http://test/2" }
+        assertNotNull(chapter2)
+        assertEquals(2, chapter2?.chapterIndex)
     }
 }

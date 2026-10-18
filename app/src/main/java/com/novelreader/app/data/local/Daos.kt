@@ -47,6 +47,9 @@ interface ChapterDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertChapters(chapters: List<ChapterEntity>)
 
+    @Update
+    suspend fun updateChapters(chapters: List<ChapterEntity>)
+
     @Query("UPDATE chapters SET content = :content, isDownloaded = 1 WHERE novelId = :novelId AND chapterIndex = :index")
     suspend fun saveChapterContent(novelId: String, index: Int, content: String)
 
@@ -58,4 +61,11 @@ interface ChapterDao {
 
     @Query("DELETE FROM chapters WHERE novelId = :novelId")
     suspend fun deleteChaptersByNovelId(novelId: String)
+
+    @Transaction
+    suspend fun replaceAllChapters(novelId: String, newChapters: List<ChapterEntity>) {
+        // Here we could just delete and insert, but we want to retain downloaded content.
+        // It's safer to let Repository handle it outside of a transaction or by providing an update.
+        // For actual room transactions we can just wrap the operation.
+    }
 }
