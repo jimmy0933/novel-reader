@@ -80,29 +80,37 @@ class MainActivity : ComponentActivity() {
                                 repository.startDownloadAllChapters(novelId)
                                 Toast.makeText(this@MainActivity, "已在背景開始整部下載！", Toast.LENGTH_SHORT).show()
                             },
-                            onSyncLatestChapters = {
+                            onSyncLatestChapters = { callback ->
                                 lifecycleScope.launch {
                                     Toast.makeText(this@MainActivity, "正在檢查並同步最新章節...", Toast.LENGTH_SHORT).show()
-                                    val result = repository.syncLatestChapters(novelId)
-                                    if (result.isSuccess) {
-                                        val newCount = result.getOrNull() ?: 0
-                                        if (newCount > 0) {
-                                            Toast.makeText(this@MainActivity, "同步成功！新增了 $newCount 個最新章節", Toast.LENGTH_LONG).show()
+                                    try {
+                                        val result = repository.syncLatestChapters(novelId)
+                                        if (result.isSuccess) {
+                                            val newCount = result.getOrNull() ?: 0
+                                            if (newCount > 0) {
+                                                Toast.makeText(this@MainActivity, "同步成功！新增了 $newCount 個最新章節", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                Toast.makeText(this@MainActivity, "目前已是最新章節，無新內容", Toast.LENGTH_SHORT).show()
+                                            }
                                         } else {
-                                            Toast.makeText(this@MainActivity, "目前已是最新章節，無新內容", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(this@MainActivity, "同步失敗：${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
                                         }
-                                    } else {
-                                        Toast.makeText(this@MainActivity, "同步失敗：${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                    } finally {
+                                        callback()
                                     }
                                 }
                             },
-                            onDownloadSingleChapter = { chapterIndex ->
+                            onDownloadSingleChapter = { chapterIndex, callback ->
                                 lifecycleScope.launch {
-                                    val result = repository.downloadSingleChapter(novelId, chapterIndex)
-                                    if (result.isSuccess) {
-                                        Toast.makeText(this@MainActivity, "該章節下載完成！", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(this@MainActivity, "下載失敗：${result.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                                    try {
+                                        val result = repository.downloadSingleChapter(novelId, chapterIndex)
+                                        if (result.isSuccess) {
+                                            Toast.makeText(this@MainActivity, "該章節下載完成！", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(this@MainActivity, "下載失敗：${result.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } finally {
+                                        callback()
                                     }
                                 }
                             }

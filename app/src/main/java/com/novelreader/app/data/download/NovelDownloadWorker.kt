@@ -110,6 +110,11 @@ class NovelDownloadWorker(
                 setForeground(getForegroundInfo())
             } catch (e: Exception) {
                 e.printStackTrace()
+                // Do not eat exception entirely, if we can't set foreground, OS might kill us,
+                // but let's record and throw if needed, or backoff
+                if (e is android.app.ForegroundServiceStartNotAllowedException || e is IllegalStateException) {
+                    return@withContext Result.retry()
+                }
             }
 
             // Retry until no pending chapters
@@ -178,6 +183,13 @@ class NovelDownloadWorker(
                     if (downloadResult.isSuccess) {
                         overallSuccess++
                     } else {
+                        val ex = downloadResult.exceptionOrNull()
+                        if (ex is kotlinx.coroutines.CancellationException) {
+                            // If the download single chapter was cancelled, check if the worker is stopped
+                            if (isStopped) {
+                                return@withContext Result.retry()
+                            }
+                        }
                         overallFailed++
                         failedChaptersIndices.add(chapter.chapterIndex)
                     }
