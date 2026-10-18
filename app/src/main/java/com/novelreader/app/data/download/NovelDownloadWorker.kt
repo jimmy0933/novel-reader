@@ -203,41 +203,53 @@ class NovelDownloadWorker(
 
             db.novelDao().refreshDownloadedCount(novelId)
 
-            try {
-                val completionText = if (overallFailed == 0) {
-                    "《$novelTitle》離線下載完成"
-                } else {
-                    "《$novelTitle》下載完成：成功 $overallSuccess 章，失敗 $overallFailed 章 (可再次點擊下載重試)"
-                }
-
-                val completedNotification = NotificationCompat.Builder(context, CHANNEL_ID)
-                    .setContentTitle(if (overallFailed == 0) "下載完成" else "下載部分完成")
-                    .setContentText(completionText)
-                    .setStyle(NotificationCompat.BigTextStyle().bigText(completionText))
-                    .setSmallIcon(if (overallFailed == 0) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
-                    .setAutoCancel(true)
-                    .build()
-
-                notificationManager.notify(notificationId, completedNotification)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            val willRetry = overallFailed > 0 && !isStopped && runAttemptCount < 5
+            val willStopRetry = isStopped
+            val status = if (isStopped) "STOPPED" else if (willRetry) "WAITING_RETRY" else if (overallFailed == 0) "SUCCESS" else "PARTIAL_SUCCESS"
+            val msg = if (isStopped) "Worker was stopped by OS/User" else if (willRetry) "Waiting for retry..." else "Completed pass"
 
             DiagnosticLogger.log(
                 context,
                 id.toString(),
                 novelId,
-                if (isStopped) "STOPPED" else if (overallFailed == 0) "SUCCESS" else "PARTIAL_SUCCESS",
-                if (isStopped) "Worker was stopped by OS/User" else "Completed pass",
+                status,
+                msg,
                 failedChaptersIndices,
                 retryCount
             )
 
-            return@withContext if (overallFailed > 0 && !isStopped && runAttemptCount < 5) {
-                // Retry if any failed, limited to 5 attempts
-                Result.retry()
-            } else if (isStopped) {
-                // Need to restart later if it was stopped prematurely
+            try {
+                if (!willRetry && !isStopped) {
+                    val completionText = if (overallFailed == 0) {
+                        "《$novelTitle》離線下載完成"
+                    } else {
+                        "《$novelTitle》最終下載結果：成功 $overallSuccess 章，失敗 $overallFailed 章 (可再次點擊下載重試)"
+                    }
+
+                    val completedNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+                        .setContentTitle(if (overallFailed == 0) "下載完成" else "下載部分完成")
+                        .setContentText(completionText)
+                        .setStyle(NotificationCompat.BigTextStyle().bigText(completionText))
+                        .setSmallIcon(if (overallFailed == 0) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
+                        .setAutoCancel(true)
+                        .build()
+
+                    notificationManager.notify(notificationId, completedNotification)
+                } else if (willRetry) {
+                    val retryText = "《$novelTitle》遇到網路問題，等待自動重試 (第 ${runAttemptCount + 1} 次)..."
+                    val retryNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+                        .setContentTitle("等待重試中")
+                        .setContentText(retryText)
+                        .setSmallIcon(android.R.drawable.stat_sys_download)
+                        .setAutoCancel(true)
+                        .build()
+                    notificationManager.notify(notificationId, retryNotification)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
+            return@withContext if (willRetry || willStopRetry) {
                 Result.retry()
             } else if (overallFailed > 0) {
                 // We reached max retries but still have failures. Leave pending, report failure.

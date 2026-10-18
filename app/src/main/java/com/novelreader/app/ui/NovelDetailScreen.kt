@@ -55,9 +55,13 @@ fun NovelDetailScreen(
     val workInfoState = workManager.getWorkInfosByTagFlow("DOWNLOAD_$novelId").collectAsState(initial = emptyList())
 
     // Pick the most relevant work info (RUNNING/ENQUEUED/BLOCKED takes precedence over finished states)
+    // UUID (it.id) comparison is unreliable for time-ordering.
+    // However, since we use `enqueueUniqueWork` with `ExistingWorkPolicy.KEEP` or `REPLACE`,
+    // the list should generally contain the latest work for this unique name.
+    // We prioritize unfinished work.
     val workInfo = remember(workInfoState.value) {
         val list = workInfoState.value
-        list.firstOrNull { !it.state.isFinished } ?: list.maxByOrNull { it.id }
+        list.firstOrNull { !it.state.isFinished } ?: list.lastOrNull()
     }
 
     val workerState = workInfo?.state

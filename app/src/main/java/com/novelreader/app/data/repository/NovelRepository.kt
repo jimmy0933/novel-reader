@@ -160,9 +160,11 @@ class NovelRepository(private val context: Context) {
                     return Result.success(Unit)
                 }
             } catch (e: Exception) {
-                if (e is java.io.InterruptedIOException || e is kotlinx.coroutines.CancellationException) {
-                    throw kotlinx.coroutines.CancellationException("Download cancelled")
+                if (e is kotlinx.coroutines.CancellationException) {
+                    throw e // Ensure true cancellation is propagated
                 }
+                // Note: SocketTimeoutException is a subclass of InterruptedIOException
+                // But we don't want to cancel the coroutine for just a network timeout
                 lastException = e
                 if (attempt < maxAttempts) {
                     delay(500L * attempt)
@@ -190,50 +192,64 @@ class NovelRepository(private val context: Context) {
                 return@withContext Result.failure(IllegalStateException("解析最新章節列表失敗"))
             }
 
-            // 取得本地已存在的章節網址集合
             val existingChapters = chapterDao.getChapters(novelId)
-            val existingUrls = existingChapters.map { it.url }.toSet()
+            val existingChapterMap = existingChapters.associateBy { it.url }
 
-            // 篩選出本地尚未擁有的新章節
-            val newChapters = detail.chapters.filter { it.url !in existingUrls }
+            val newChapters = detail.chapters.filter { it.url !in existingChapterMap }
+            val totalNew = newChapters.size
 
-            if (newChapters.isNotEmpty()) {
-                var maxExistingIndex = existingChapters.maxOfOrNull { it.chapterIndex } ?: -1
+            // Rewrite all chapters to match the website's correct order (detail.chapters)
+            // Existing chapters will keep their downloaded status and content
+            // We use Room's withTransaction (or similar) through DB if we want, or just a simple replace here
+            // Because the primary key is now (novelId, chapterId), we can update or insert safely without collision on index
 
-                // 為了保持章節原有的網頁順序：
-                // 1. 如果我們只把新章節加到 maxIndex，中間插入的章節會顯示在末尾。
-                // 2. 這邊先用最簡單也最安全的策略：對於所有 newChapters，全部接續在目前最大值後面。
-                // 若要完美重排需要做一場 Database Transaction 將既有的 Chapter 往後擠。但這會打亂既有書籤和 primary key
-                // 實務上小說大部分是純追加。對於中間插入，放到末尾並非完美，但能保證不掉章節。
-                // 更完善的做法是根據 URL 和 Title 重建章節列表。
-                // 這裡我們採用 Transaction 來確保既有資料如果需要位移，也能正確處理，但為了簡單，我們僅在末尾附加
-                val newEntities = newChapters.map {
-                    maxExistingIndex++
+            val updatedEntities = detail.chapters.map { parsedChapter ->
+                val existing = existingChapterMap[parsedChapter.url]
+                if (existing != null) {
+                    // Update index if it changed
+                    existing.copy(chapterIndex = parsedChapter.index, title = parsedChapter.title)
+                } else {
                     ChapterEntity(
                         novelId = novelId,
-                        chapterIndex = maxExistingIndex,
-                        chapterId = it.url,
-                        title = it.title,
-                        url = it.url,
+                        chapterIndex = parsedChapter.index,
+                        chapterId = parsedChapter.url,
+                        title = parsedChapter.title,
+                        url = parsedChapter.url,
                         isDownloaded = false
                     )
                 }
-
-                // Use a transaction in dao if we need to shuffle. Since we just append, insert is fine.
-                chapterDao.insertChapters(newEntities)
-
-                // Make sure total chapters matches exactly what we have in DB
-                val actualTotal = chapterDao.getChapters(novelId).size
-                novelDao.updateTotalChapters(novelId, actualTotal)
-
-                return@withContext Result.success(newChapters.size)
             }
 
-            // Sync total chapters even if no new chapters were added
+            // Doing an upsert for all entities. Because PK is (novelId, chapterId), insert on conflict replace or update works.
+            // However, Room Dao does not have an upsert out of the box unless we do insert OR IGNORE then UPDATE.
+            // We can just use the provided update and insert methods
+
+            val toInsert = updatedEntities.filter { it.url !in existingChapterMap }
+            val toUpdate = updatedEntities.filter { it.url in existingChapterMap }
+
+            // Apply DB changes
+            if (toInsert.isNotEmpty()) {
+                chapterDao.insertChapters(toInsert)
+            }
+            if (toUpdate.isNotEmpty()) {
+                chapterDao.updateChapters(toUpdate)
+            }
+
+            // Make sure total chapters matches exactly what we have in DB
             val actualTotal = chapterDao.getChapters(novelId).size
             novelDao.updateTotalChapters(novelId, actualTotal)
 
-            Result.success(0)
+            // Update reading progress index if the current chapter moved
+            // (The novel's lastReadChapterIndex should be synced if lastReadChapterId exists)
+            val currentNovel = novelDao.getNovelById(novelId)
+            if (currentNovel != null && currentNovel.lastReadChapterId != null) {
+                val matchingChap = updatedEntities.find { it.chapterId == currentNovel.lastReadChapterId }
+                if (matchingChap != null && matchingChap.chapterIndex != currentNovel.lastReadChapterIndex) {
+                    novelDao.updateReadingProgress(novelId, currentNovel.lastReadChapterId, matchingChap.title, matchingChap.chapterIndex, currentNovel.lastReadTime)
+                }
+            }
+
+            Result.success(totalNew)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -289,34 +305,87 @@ class NovelRepository(private val context: Context) {
             }
 
             val novelId = hashUrl(url)
-            val novel = NovelEntity(
-                id = novelId,
-                title = detail.title.ifBlank { "未命名作品" },
-                author = detail.author,
-                coverUrl = detail.coverUrl,
-                intro = detail.intro,
-                sourceUrl = url,
-                totalChapters = detail.chapters.size,
-                downloadedChapters = 0
-            )
+            val existingNovel = novelDao.getNovelById(novelId)
+            val finalNovel: NovelEntity
 
-            // 若之前曾加入過該小說，重新加入時清除舊有章節狀態，全新處理
-            chapterDao.deleteChaptersByNovelId(novelId)
-            novelDao.insertNovel(novel)
-
-            val chapterEntities = detail.chapters.map {
-                ChapterEntity(
-                    novelId = novelId,
-                    chapterIndex = it.index,
-                    chapterId = it.url,
-                    title = it.title,
-                    url = it.url,
-                    isDownloaded = false
+            if (existingNovel != null) {
+                // 如果已經存在，則更新資訊，並觸發同步合併章節，不要清除進度
+                finalNovel = existingNovel.copy(
+                    title = detail.title.ifBlank { existingNovel.title },
+                    author = detail.author.ifBlank { existingNovel.author },
+                    coverUrl = detail.coverUrl.ifBlank { existingNovel.coverUrl },
+                    intro = detail.intro.ifBlank { existingNovel.intro }
                 )
-            }
-            chapterDao.insertChapters(chapterEntities)
+                novelDao.updateNovel(finalNovel)
 
-            Result.success(novel)
+                // 共用 sync 的章節更新邏輯（不需要發送網路請求）
+                val existingChapters = chapterDao.getChapters(novelId)
+                val existingChapterMap = existingChapters.associateBy { it.url }
+                val updatedEntities = detail.chapters.map { parsedChapter ->
+                    val existing = existingChapterMap[parsedChapter.url]
+                    if (existing != null) {
+                        existing.copy(chapterIndex = parsedChapter.index, title = parsedChapter.title)
+                    } else {
+                        ChapterEntity(
+                            novelId = novelId,
+                            chapterIndex = parsedChapter.index,
+                            chapterId = parsedChapter.url,
+                            title = parsedChapter.title,
+                            url = parsedChapter.url,
+                            isDownloaded = false
+                        )
+                    }
+                }
+
+                val toInsert = updatedEntities.filter { it.url !in existingChapterMap }
+                val toUpdate = updatedEntities.filter { it.url in existingChapterMap }
+
+                if (toInsert.isNotEmpty()) {
+                    chapterDao.insertChapters(toInsert)
+                }
+                if (toUpdate.isNotEmpty()) {
+                    chapterDao.updateChapters(toUpdate)
+                }
+
+                val actualTotal = chapterDao.getChapters(novelId).size
+                novelDao.updateTotalChapters(novelId, actualTotal)
+
+                // 同步閱讀進度
+                if (finalNovel.lastReadChapterId != null) {
+                    val matchingChap = updatedEntities.find { it.chapterId == finalNovel.lastReadChapterId }
+                    if (matchingChap != null && matchingChap.chapterIndex != finalNovel.lastReadChapterIndex) {
+                        novelDao.updateReadingProgress(novelId, finalNovel.lastReadChapterId, matchingChap.title, matchingChap.chapterIndex, finalNovel.lastReadTime)
+                    }
+                }
+                novelDao.refreshDownloadedCount(novelId)
+
+            } else {
+                // 完全新加入
+                finalNovel = NovelEntity(
+                    id = novelId,
+                    title = detail.title.ifBlank { "未命名作品" },
+                    author = detail.author,
+                    coverUrl = detail.coverUrl,
+                    intro = detail.intro,
+                    sourceUrl = url,
+                    totalChapters = detail.chapters.size,
+                    downloadedChapters = 0
+                )
+                novelDao.insertNovel(finalNovel)
+                val chapterEntities = detail.chapters.map {
+                    ChapterEntity(
+                        novelId = novelId,
+                        chapterIndex = it.index,
+                        chapterId = it.url,
+                        title = it.title,
+                        url = it.url,
+                        isDownloaded = false
+                    )
+                }
+                chapterDao.insertChapters(chapterEntities)
+            }
+
+            Result.success(finalNovel)
         } catch (e: Exception) {
             Result.failure(e)
         }
