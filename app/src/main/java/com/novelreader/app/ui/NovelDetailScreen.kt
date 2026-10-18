@@ -41,8 +41,8 @@ fun NovelDetailScreen(
     onBack: () -> Unit,
     onChapterClick: (Int) -> Unit,
     onDownloadAll: () -> Unit,
-    onSyncLatestChapters: () -> Unit,
-    onDownloadSingleChapter: (Int) -> Unit = {}
+    onSyncLatestChapters: (() -> Unit) -> Unit,
+    onDownloadSingleChapter: (Int, () -> Unit) -> Unit
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("novel_prefs", android.content.Context.MODE_PRIVATE) }
@@ -53,16 +53,23 @@ fun NovelDetailScreen(
     val workManager = androidx.work.WorkManager.getInstance(context)
     val novelId = novel?.id ?: ""
     val workInfoState = workManager.getWorkInfosByTagFlow("DOWNLOAD_$novelId").collectAsState(initial = emptyList())
-    val workInfo = workInfoState.value.firstOrNull()
+
+    // Pick the most relevant work info (RUNNING/ENQUEUED/BLOCKED takes precedence over finished states)
+    val workInfo = remember(workInfoState.value) {
+        val list = workInfoState.value
+        list.firstOrNull { !it.state.isFinished } ?: list.maxByOrNull { it.id }
+    }
+
     val workerState = workInfo?.state
-    val isWaiting = workerState == androidx.work.WorkInfo.State.ENQUEUED
+    val isWaiting = workerState == androidx.work.WorkInfo.State.ENQUEUED || workerState == androidx.work.WorkInfo.State.BLOCKED
     val isFailed = workerState == androidx.work.WorkInfo.State.FAILED
     val isWorkerDownloading = workerState == androidx.work.WorkInfo.State.RUNNING
 
-    val workerProgressData = workInfo?.progress
-    val currentWorkerChapter = workerProgressData?.getString("CURRENT_CHAPTER")
-    val workerOverallSuccess = workerProgressData?.getInt("SUCCESS_COUNT", 0) ?: 0
-    val workerOverallFailed = workerProgressData?.getInt("FAILED_COUNT", 0) ?: 0
+    // Read progress if running, outputData if finished
+    val workerData = if (workerState?.isFinished == true) workInfo?.outputData else workInfo?.progress
+    val currentWorkerChapter = workerData?.getString("CURRENT_CHAPTER")
+    val workerOverallSuccess = workerData?.getInt("SUCCESS_COUNT", 0) ?: 0
+    val workerOverallFailed = workerData?.getInt("FAILED_COUNT", 0) ?: 0
 
     LaunchedEffect(novel?.id) {
         if (novel != null) {
@@ -120,7 +127,9 @@ fun NovelDetailScreen(
                         onClick = {
                             if (!isSyncing) {
                                 isSyncing = true
-                                onSyncLatestChapters()
+                                onSyncLatestChapters {
+                                    isSyncing = false
+                                }
                             }
                         }
                     ) {
@@ -322,7 +331,9 @@ fun NovelDetailScreen(
                             IconButton(
                                 onClick = {
                                     downloadingChapterIndices = downloadingChapterIndices + chapter.chapterIndex
-                                    onDownloadSingleChapter(chapter.chapterIndex)
+                                    onDownloadSingleChapter(chapter.chapterIndex) {
+                                        downloadingChapterIndices = downloadingChapterIndices - chapter.chapterIndex
+                                    }
                                 },
                                 modifier = Modifier.size(24.dp)
                             ) {
@@ -337,7 +348,9 @@ fun NovelDetailScreen(
                             IconButton(
                                 onClick = {
                                     downloadingChapterIndices = downloadingChapterIndices + chapter.chapterIndex
-                                    onDownloadSingleChapter(chapter.chapterIndex)
+                                    onDownloadSingleChapter(chapter.chapterIndex) {
+                                        downloadingChapterIndices = downloadingChapterIndices - chapter.chapterIndex
+                                    }
                                 },
                                 modifier = Modifier.size(24.dp)
                             ) {

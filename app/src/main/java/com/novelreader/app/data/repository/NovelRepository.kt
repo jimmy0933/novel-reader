@@ -43,7 +43,11 @@ class NovelRepository(private val context: Context) {
     }
 
     private val repositoryScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val activeCalls = java.util.concurrent.ConcurrentHashMap<Pair<String, Int>, okhttp3.Call>()
     private val inFlightDownloads = java.util.concurrent.ConcurrentHashMap<Pair<String, Int>, Deferred<Result<Unit>>>()
+
+    // Tracks the number of active waiters (e.g., Reader + Worker)
+    private val inFlightWaiters = java.util.concurrent.ConcurrentHashMap<Pair<String, Int>, Int>()
 
     /**
      * 下載單一章節（提供即時閱讀、預載與背景整部下載共用，同一章節避免重複請求）
@@ -59,12 +63,15 @@ class NovelRepository(private val context: Context) {
         val key = Pair(novelId, chapterIndex)
 
         val deferred = synchronized(inFlightDownloads) {
+            inFlightWaiters[key] = (inFlightWaiters[key] ?: 0) + 1
             inFlightDownloads.getOrPut(key) {
                 repositoryScope.async {
                     try {
                         fetchAndSaveChapter(novelId, chapter)
                     } finally {
                         inFlightDownloads.remove(key)
+                        inFlightWaiters.remove(key)
+                        activeCalls.remove(key)?.cancel()
                     }
                 }
             }
@@ -73,6 +80,19 @@ class NovelRepository(private val context: Context) {
         try {
             deferred.await()
         } catch (e: kotlinx.coroutines.CancellationException) {
+            val waiters = synchronized(inFlightDownloads) {
+                val count = (inFlightWaiters[key] ?: 1) - 1
+                if (count <= 0) {
+                    inFlightWaiters.remove(key)
+                } else {
+                    inFlightWaiters[key] = count
+                }
+                count
+            }
+            if (waiters <= 0) {
+                deferred.cancel()
+                activeCalls.remove(key)?.cancel()
+            }
             throw e
         } catch (e: Exception) {
             Result.failure(e)
@@ -101,7 +121,9 @@ class NovelRepository(private val context: Context) {
                     requestBuilder.header("Cookie", cookie)
                 }
 
-                httpClient.newCall(requestBuilder.build()).execute().use { response ->
+                val call = httpClient.newCall(requestBuilder.build())
+                activeCalls[Pair(novelId, chapter.chapterIndex)] = call
+                call.execute().use { response ->
                     val statusCode = response.code
 
                     if (!response.isSuccessful) {
@@ -138,7 +160,9 @@ class NovelRepository(private val context: Context) {
                     return Result.success(Unit)
                 }
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (e is java.io.InterruptedIOException || e is kotlinx.coroutines.CancellationException) {
+                    throw kotlinx.coroutines.CancellationException("Download cancelled")
+                }
                 lastException = e
                 if (attempt < maxAttempts) {
                     delay(500L * attempt)
@@ -174,30 +198,73 @@ class NovelRepository(private val context: Context) {
             val newChapters = detail.chapters.filter { it.url !in existingUrls }
 
             if (newChapters.isNotEmpty()) {
+                var maxExistingIndex = existingChapters.maxOfOrNull { it.chapterIndex } ?: -1
+
+                // 為了保持章節原有的網頁順序：
+                // 1. 如果我們只把新章節加到 maxIndex，中間插入的章節會顯示在末尾。
+                // 2. 這邊先用最簡單也最安全的策略：對於所有 newChapters，全部接續在目前最大值後面。
+                // 若要完美重排需要做一場 Database Transaction 將既有的 Chapter 往後擠。但這會打亂既有書籤和 primary key
+                // 實務上小說大部分是純追加。對於中間插入，放到末尾並非完美，但能保證不掉章節。
+                // 更完善的做法是根據 URL 和 Title 重建章節列表。
+                // 這裡我們採用 Transaction 來確保既有資料如果需要位移，也能正確處理，但為了簡單，我們僅在末尾附加
                 val newEntities = newChapters.map {
+                    maxExistingIndex++
                     ChapterEntity(
                         novelId = novelId,
-                        chapterIndex = it.index,
+                        chapterIndex = maxExistingIndex,
                         chapterId = it.url,
                         title = it.title,
                         url = it.url,
                         isDownloaded = false
                     )
                 }
+
+                // Use a transaction in dao if we need to shuffle. Since we just append, insert is fine.
                 chapterDao.insertChapters(newEntities)
-                novelDao.updateTotalChapters(novelId, existingChapters.size + newChapters.size)
+
+                // Make sure total chapters matches exactly what we have in DB
+                val actualTotal = chapterDao.getChapters(novelId).size
+                novelDao.updateTotalChapters(novelId, actualTotal)
+
+                return@withContext Result.success(newChapters.size)
             }
 
-            Result.success(newChapters.size)
+            // Sync total chapters even if no new chapters were added
+            val actualTotal = chapterDao.getChapters(novelId).size
+            novelDao.updateTotalChapters(novelId, actualTotal)
+
+            Result.success(0)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
     suspend fun deleteNovel(novel: NovelEntity) {
-        cancelDownload(novel.id)
-        chapterDao.deleteChaptersByNovelId(novel.id)
-        novelDao.deleteNovel(novel)
+        withContext(Dispatchers.IO) {
+            cancelDownload(novel.id)
+
+            // Collect keys that belong to this novel
+            val keysToCancel = synchronized(inFlightDownloads) {
+                inFlightDownloads.keys.filter { it.first == novel.id }
+            }
+
+            // Cancel and await active downloads for this novel
+            for (key in keysToCancel) {
+                val deferred = inFlightDownloads[key]
+                if (deferred != null) {
+                    deferred.cancel()
+                    activeCalls.remove(key)?.cancel()
+                    try {
+                        deferred.await()
+                    } catch (e: Exception) {
+                        // ignore CancellationException and others
+                    }
+                }
+            }
+
+            chapterDao.deleteChaptersByNovelId(novel.id)
+            novelDao.deleteNovel(novel)
+        }
     }
 
     /**
@@ -275,11 +342,10 @@ class NovelRepository(private val context: Context) {
             )
             .build()
 
-        // Use APPEND_OR_REPLACE so if there is an existing download for this novel,
-        // it appends. Actually, KEEP is better so we don't start duplicate jobs.
+        // Use KEEP so we don't start duplicate jobs for the same novel.
         workManager.enqueueUniqueWork(
             "DOWNLOAD_$novelId",
-            ExistingWorkPolicy.APPEND_OR_REPLACE,
+            ExistingWorkPolicy.KEEP,
             workRequest
         )
     }

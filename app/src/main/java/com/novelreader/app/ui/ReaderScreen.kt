@@ -62,8 +62,20 @@ fun ReaderScreen(
     var showBars by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
+    val saveCurrentPosition = { targetChapterIndex: Int ->
+        if (isReadyToRecord) {
+            val idx = lazyListState.firstVisibleItemIndex
+            val offset = lazyListState.firstVisibleItemScrollOffset
+            prefs.edit()
+                .putInt("pos_${novelId}_${targetChapterIndex}", idx)
+                .putInt("offset_${novelId}_${targetChapterIndex}", offset)
+                .apply()
+        }
+    }
+
     fun switchChapter(newIndex: Int) {
         if (newIndex >= 0 && (chapters.isEmpty() || newIndex < chapters.size)) {
+            saveCurrentPosition(chapterIndex)
             isReadyToRecord = false
             coroutineScope.launch {
                 chapterIndex = newIndex
@@ -394,17 +406,6 @@ fun ReaderScreen(
                 }
 
                 val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
-
-                val saveCurrentPosition by rememberUpdatedState { targetChapterIndex: Int ->
-                    if (isReadyToRecord) {
-                        val idx = lazyListState.firstVisibleItemIndex
-                        val offset = lazyListState.firstVisibleItemScrollOffset
-                        prefs.edit()
-                            .putInt("pos_${novelId}_${targetChapterIndex}", idx)
-                            .putInt("offset_${novelId}_${targetChapterIndex}", offset)
-                            .apply()
-                    }
-                }
 
                 // 當手動滑動或 TTS 滾動時，即時記憶當前閱讀段落 (debounce以避免頻繁寫入)
                 LaunchedEffect(chapterIndex) {
