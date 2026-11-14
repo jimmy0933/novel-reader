@@ -107,6 +107,13 @@ jobs:
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/*.apk --clobber
+            # 只保留本次建置的 APK，移除同 release 內其他（例如 debug 簽名）舊檔
+            KEEP="$(basename dist/*.apk)"
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[] | "\(.id) \(.name)"' | while read -r id name; do
+              if [[ "$name" != "$KEEP" ]]; then
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
+              fi
+            done
             gh release edit "$TAG" --title "Novel Reader v${VERSION}" --notes-file "$RUNNER_TEMP/notes.md" --latest
           else
             gh release create "$TAG" dist/*.apk --target "$GITHUB_SHA" --title "Novel Reader v${VERSION}" --notes-file "$RUNNER_TEMP/notes.md" --latest
