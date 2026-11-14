@@ -21,10 +21,26 @@ android {
         }
     }
 
+    signingConfigs {
+        create("actions") {
+            val keystore = System.getenv("NOVELREADER_KEYSTORE_PATH")
+            if (!keystore.isNullOrBlank()) {
+                storeFile = file(keystore)
+                storePassword = System.getenv("NOVELREADER_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("NOVELREADER_KEY_ALIAS")
+                keyPassword = System.getenv("NOVELREADER_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (!System.getenv("NOVELREADER_KEYSTORE_PATH").isNullOrBlank()) {
+                signingConfigs.getByName("actions")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
