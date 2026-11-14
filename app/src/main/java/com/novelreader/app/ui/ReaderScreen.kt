@@ -146,16 +146,21 @@ fun ReaderScreen(
         mutableStateOf(prefs.getFloat("tts_speech_rate", 1.0f))
     }
 
+    var useTraditional by remember {
+        mutableStateOf(prefs.getBoolean("simp_to_trad", true))
+    }
+
     var lineHeightMult by remember {
         mutableStateOf(prefs.getFloat("line_height", 1.8f))
     }
 
     // 將章節內容按行切分成段落（段落 0 為標題）
-    val paragraphs = remember(chapter?.title, chapter?.content) {
+    val paragraphs = remember(chapter?.title, chapter?.content, useTraditional) {
         val list = mutableListOf<String>()
         if (chapter != null) {
-            list.add(chapter.title)
-            val raw = chapter.content ?: ""
+            val conv: (String) -> String = if (useTraditional) com.novelreader.app.utils.ChineseConverter::toTraditional else { t -> t }
+            list.add(conv(chapter.title))
+            val raw = conv(chapter.content ?: "")
             val lines = raw.lines().map { it.trim() }.filter { it.isNotBlank() }
             if (lines.isNotEmpty()) {
                 list.addAll(lines)
@@ -227,7 +232,7 @@ fun ReaderScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = chapter?.title ?: "閱讀器",
+                        text = chapter?.title?.let { if (useTraditional) com.novelreader.app.utils.ChineseConverter.toTraditional(it) else it } ?: "閱讀器",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = contentColor,
@@ -547,6 +552,24 @@ fun ReaderScreen(
                         ) {
                             Text("深色")
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // 簡轉繁
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("簡體轉繁體", style = MaterialTheme.typography.bodyMedium)
+                        Switch(
+                            checked = useTraditional,
+                            onCheckedChange = {
+                                useTraditional = it
+                                prefs.edit().putBoolean("simp_to_trad", it).apply()
+                            }
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(4.dp))

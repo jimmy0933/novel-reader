@@ -176,7 +176,7 @@ class MainActivity : ComponentActivity() {
                         title = { Text("貼上小說網址") },
                         text = {
                             Column {
-                                Text("支援 czbooks 或一般小說網站首頁 / 目錄頁網址：", style = MaterialTheme.typography.bodySmall)
+                                Text("支援 czbooks、小說之家 (xszj.org) 或一般小說網站首頁 / 目錄頁網址：", style = MaterialTheme.typography.bodySmall)
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedTextField(
                                     value = inputUrl,

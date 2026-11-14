@@ -7,24 +7,45 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 
+/** 內建瀏覽器的主頁清單，可在右上角「首頁」圖示切換 */
+val BROWSER_HOME_SITES = listOf(
+    "小說之家 (xszj.org)" to "https://m.xszj.org/",
+    "CZBooks" to "https://czbooks.net"
+)
+
 @SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WebBrowserScreen(
-    initialUrl: String = "https://czbooks.net",
+    initialUrl: String = "",
     onBack: () -> Unit,
     onImportHtml: (url: String, html: String) -> Unit
 ) {
-    var currentUrl by remember { mutableStateOf(initialUrl) }
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("browser_prefs", android.content.Context.MODE_PRIVATE) }
+    val startUrl = remember {
+        initialUrl.ifBlank { prefs.getString("home_url", null) ?: BROWSER_HOME_SITES.first().second }
+    }
+    var currentUrl by remember { mutableStateOf(startUrl) }
+    var homeMenuOpen by remember { mutableStateOf(false) }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
     var isLoading by remember { mutableStateOf(false) }
+
+    // 返回鍵優先回到瀏覽器上一頁，無上一頁才離開
+    BackHandler {
+        val web = webViewInstance
+        if (web != null && web.canGoBack()) web.goBack() else onBack()
+    }
 
     Scaffold(
         topBar = {
@@ -36,6 +57,23 @@ fun WebBrowserScreen(
                     }
                 },
                 actions = {
+                    Box {
+                        IconButton(onClick = { homeMenuOpen = true }) {
+                            Icon(Icons.Default.Home, contentDescription = "切換主頁")
+                        }
+                        DropdownMenu(expanded = homeMenuOpen, onDismissRequest = { homeMenuOpen = false }) {
+                            BROWSER_HOME_SITES.forEach { (name, url) ->
+                                DropdownMenuItem(
+                                    text = { Text(name) },
+                                    onClick = {
+                                        homeMenuOpen = false
+                                        prefs.edit().putString("home_url", url).apply()
+                                        webViewInstance?.loadUrl(url)
+                                    }
+                                )
+                            }
+                        }
+                    }
                     IconButton(onClick = { webViewInstance?.reload() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "重新整理")
                     }
@@ -103,7 +141,7 @@ fun WebBrowserScreen(
                                 CookieManager.getInstance().flush()
                             }
                         }
-                        loadUrl(initialUrl)
+                        loadUrl(startUrl)
                         webViewInstance = this
                     }
                 }
