@@ -187,7 +187,7 @@ class NovelRepository(private val context: Context) {
             val response = httpClient.newCall(request).execute()
             val html = response.body?.string() ?: return@withContext Result.failure(IllegalStateException("無法連線讀取最新目錄"))
 
-            val detail = parser.parseNovelDetail(html, novel.sourceUrl)
+            val detail = loadFullDetail(html, novel.sourceUrl)
             if (detail.chapters.isEmpty()) {
                 return@withContext Result.failure(IllegalStateException("解析最新章節列表失敗"))
             }
@@ -283,12 +283,46 @@ class NovelRepository(private val context: Context) {
         }
     }
 
+    private fun fetchHtml(url: String): String {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+            .build()
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IllegalStateException("HTTP ${response.code}: $url")
+            return response.body?.string() ?: throw IllegalStateException("無法讀取網頁內容")
+        }
+    }
+
+    /**
+     * 解析小說資訊與完整章節目錄。小說之家 (xszj.org) 書頁只列部分章節，需另抓分頁目錄。
+     */
+    private fun loadFullDetail(html: String, url: String): com.novelreader.app.data.parser.ParsedNovelDetail {
+        val detail = parser.parseNovelDetail(html, url)
+        val bookUrl = parser.xszjBookUrl(url) ?: return detail
+
+        val firstUrl = parser.xszjTocFirstUrl(bookUrl)
+        val firstHtml = fetchHtml(firstUrl)
+        val pageUrls = parser.parseXszjTocPageUrls(firstHtml, firstUrl)
+        val seen = mutableSetOf<String>()
+        val all = mutableListOf<com.novelreader.app.data.parser.ParsedChapterInfo>()
+        for (pageUrl in pageUrls) {
+            val pageHtml = if (pageUrl == firstUrl) firstHtml else fetchHtml(pageUrl)
+            for (c in parser.parseXszjTocPage(pageHtml, pageUrl)) {
+                if (seen.add(c.url)) all.add(c)
+            }
+        }
+        if (all.isEmpty()) return detail
+        return detail.copy(chapters = all.mapIndexed { i, c -> c.copy(index = i) })
+    }
+
     /**
      * 從網址直接抓取或從 WebView 傳入 HTML 解析並加入書架
      */
-    suspend fun importNovelFromUrl(url: String, htmlContent: String? = null): Result<NovelEntity> = withContext(Dispatchers.IO) {
+    suspend fun importNovelFromUrl(rawUrl: String, htmlContent: String? = null): Result<NovelEntity> = withContext(Dispatchers.IO) {
         try {
-            val html = if (!htmlContent.isNullOrBlank()) {
+            val url = parser.xszjBookUrl(rawUrl) ?: rawUrl
+            val html = if (!htmlContent.isNullOrBlank() && url == rawUrl) {
                 htmlContent
             } else {
                 val request = Request.Builder()
@@ -299,7 +333,7 @@ class NovelRepository(private val context: Context) {
                 response.body?.string() ?: throw IllegalStateException("無法讀取網頁內容")
             }
 
-            val detail = parser.parseNovelDetail(html, url)
+            val detail = loadFullDetail(html, url)
             if (detail.chapters.isEmpty()) {
                 return@withContext Result.failure(IllegalStateException("找不到章節清單，請確認網址或透過內建瀏覽器驗證後匯入"))
             }

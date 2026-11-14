@@ -25,6 +25,10 @@ class UniversalNovelParser {
     fun parseNovelDetail(html: String, baseUrl: String): ParsedNovelDetail {
         val doc: Document = Jsoup.parse(html, baseUrl)
 
+        if (isXszj(baseUrl) && doc.selectFirst("section[aria-labelledby=sec-intro]") != null) {
+            return parseXszjDetail(doc)
+        }
+
         // 1. 解析標題 (嘗試常見 meta 或 h1/標題選擇器)
         val title = doc.selectFirst("meta[property=og:title]")?.attr("content")
             ?: doc.selectFirst("h1, .novel-title, .title, .name")?.text()
@@ -155,6 +159,56 @@ class UniversalNovelParser {
             intro = intro.trim(),
             chapters = sortedChapters
         )
+    }
+
+    // ---------- 小說之家 (xszj.org) ----------
+
+    fun isXszj(url: String): Boolean {
+        val host = try { java.net.URI(url).host } catch (e: Exception) { null } ?: return false
+        return host == "xszj.org" || host.endsWith(".xszj.org")
+    }
+
+    /** 從 xszj 任何頁面網址（書頁、目錄、章節、手機版）取得標準書頁網址 */
+    fun xszjBookUrl(url: String): String? {
+        if (!isXszj(url)) return null
+        val id = Regex("/b/(\\d+)").find(url)?.groupValues?.get(1) ?: return null
+        return "https://xszj.org/b/$id"
+    }
+
+    /** 書頁只列出部分章節，完整目錄在 /b/{id}/cs/{page} 分頁 */
+    fun xszjTocFirstUrl(bookUrl: String): String = bookUrl.trimEnd('/') + "/cs/1"
+
+    /** 目錄頁的「選擇章節範圍」下拉選單即為所有分頁網址 */
+    fun parseXszjTocPageUrls(html: String, tocUrl: String): List<String> {
+        val doc = Jsoup.parse(html, tocUrl)
+        val urls = doc.select("select option[value*=/cs/]").map { it.attr("abs:value") }
+            .filter { it.isNotBlank() }
+            .distinct()
+        return urls.ifEmpty { listOf(tocUrl) }
+    }
+
+    fun parseXszjTocPage(html: String, tocUrl: String): List<ParsedChapterInfo> {
+        val doc = Jsoup.parse(html, tocUrl)
+        return doc.select("section[aria-labelledby=toc-title] ol li a[href*=/c/]").mapNotNull { a ->
+            val href = a.attr("abs:href")
+            val text = a.text().trim()
+            if (href.isBlank() || text.isBlank()) null else ParsedChapterInfo(text, href, 0)
+        }
+    }
+
+    private fun parseXszjDetail(doc: Document): ParsedNovelDetail {
+        val title = doc.selectFirst("article h1")?.text()?.trim().orEmpty()
+        val author = doc.selectFirst("article a[href^=/z/]")?.text()?.trim() ?: "未知作者"
+        val cover = doc.selectFirst("article img[alt][fetchpriority]")?.attr("abs:src").orEmpty()
+            .takeUnless { it.contains("nocover") } ?: ""
+        val intro = doc.selectFirst("section[aria-labelledby=sec-intro] p")?.text()?.trim().orEmpty()
+        val seen = mutableSetOf<String>()
+        val chapters = doc.select("section[aria-labelledby=sec-all] li a[href*=/c/]").mapNotNull { a ->
+            val href = a.attr("abs:href")
+            val text = a.text().trim()
+            if (href.isBlank() || text.isBlank() || !seen.add(href)) null else ParsedChapterInfo(text, href, 0)
+        }.mapIndexed { i, c -> c.copy(index = i) }
+        return ParsedNovelDetail(title, author, cover, intro, chapters)
     }
 
     private fun cleanTitle(raw: String): String {
