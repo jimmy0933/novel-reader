@@ -32,6 +32,18 @@ class XszjParserTest {
         assertEquals("第1章 德才中学", d.chapters[0].title)
         assertEquals("https://xszj.org/b/103995/c/1407677", d.chapters[0].url)
         assertEquals(d.chapters.size, d.chapters.map { it.url }.toSet().size)
+        // 範例書頁標示「连载」→ 連載中
+        assertEquals(false, d.isFinished)
+    }
+
+    @Test
+    fun finishedStatusDetection() {
+        fun html(status: String) = """<html><head><meta property="og:novel:status" content="$status"/></head>
+            <body><ul id="chapter-list"><li><a href="https://e.com/c1">第1章 a</a></li></ul></body></html>"""
+        assertEquals(true, parser.parseNovelDetail(html("完結"), "https://e.com").isFinished)
+        assertEquals(true, parser.parseNovelDetail(html("完结"), "https://e.com").isFinished)
+        assertEquals(false, parser.parseNovelDetail(html("連載中"), "https://e.com").isFinished)
+        assertNull(parser.parseNovelDetail("<html><body></body></html>", "https://e.com").isFinished)
     }
 
     @Test

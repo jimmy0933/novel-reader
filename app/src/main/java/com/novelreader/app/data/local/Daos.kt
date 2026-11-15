@@ -8,6 +8,9 @@ interface NovelDao {
     @Query("SELECT * FROM novels ORDER BY lastReadTime DESC")
     fun getAllNovelsFlow(): Flow<List<NovelEntity>>
 
+    @Query("SELECT * FROM novels")
+    suspend fun getAllNovelsList(): List<NovelEntity>
+
     @Query("SELECT * FROM novels WHERE id = :novelId")
     suspend fun getNovelById(novelId: String): NovelEntity?
 

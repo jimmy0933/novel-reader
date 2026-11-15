@@ -56,7 +56,14 @@ class MainActivity : ComponentActivity() {
         }
         val app = application as NovelApplication
         val repository = app.repository
-        lifecycleScope.launch { repository.migrateXszjPagedChapters() }
+        lifecycleScope.launch {
+            repository.migrateXszjPagedChapters()
+            // 連載中的小說：進入 App 時在背景自動更新最新章節
+            val newCount = try { repository.autoSyncOngoingNovels() } catch (e: Exception) { 0 }
+            if (newCount > 0) {
+                Toast.makeText(this@MainActivity, "連載小說已自動更新 $newCount 個新章節", Toast.LENGTH_LONG).show()
+            }
+        }
 
         setContent {
             NovelReaderTheme {

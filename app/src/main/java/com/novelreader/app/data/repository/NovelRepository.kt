@@ -208,6 +208,7 @@ class NovelRepository(private val context: Context) {
             if (detail.chapters.isEmpty()) {
                 return@withContext Result.failure(IllegalStateException("解析最新章節列表失敗"))
             }
+            detail.isFinished?.let { setFinished(novelId, it) }
 
             val existingChapters = chapterDao.getChapters(novelId)
             val existingChapterMap = existingChapters.associateBy { it.url }
@@ -311,6 +312,37 @@ class NovelRepository(private val context: Context) {
         prefs.edit().putBoolean("xszj_paged_fix_v1", true).apply()
     }
 
+    // ---------- 連載中小說：進入 App 時自動更新最新章節 ----------
+
+    private val syncPrefs get() = context.getSharedPreferences("auto_sync_prefs", Context.MODE_PRIVATE)
+
+    private fun setFinished(novelId: String, finished: Boolean) {
+        syncPrefs.edit().putBoolean("finished_$novelId", finished).apply()
+    }
+
+    fun isFinished(novelId: String): Boolean = syncPrefs.getBoolean("finished_$novelId", false)
+
+    /**
+     * 對所有「非完結」的小說同步最新章節。每本小說至少間隔 [minIntervalMs] 才會再次同步，
+     * 避免每次開啟 App 都重複請求網站。回傳本次新增的章節總數。
+     */
+    suspend fun autoSyncOngoingNovels(minIntervalMs: Long = 30 * 60 * 1000L): Int = withContext(Dispatchers.IO) {
+        var totalNew = 0
+        val now = System.currentTimeMillis()
+        for (novel in novelDao.getAllNovelsList()) {
+            if (isFinished(novel.id)) continue
+            val last = syncPrefs.getLong("last_sync_${novel.id}", 0L)
+            if (now - last < minIntervalMs) continue
+            val result = syncLatestChapters(novel.id)
+            if (result.isSuccess) {
+                totalNew += result.getOrNull() ?: 0
+                syncPrefs.edit().putLong("last_sync_${novel.id}", System.currentTimeMillis()).apply()
+            }
+            delay(1_000L)
+        }
+        totalNew
+    }
+
     private fun fetchHtml(url: String): String {
         val request = Request.Builder()
             .url(url)
@@ -367,6 +399,7 @@ class NovelRepository(private val context: Context) {
             }
 
             val novelId = hashUrl(url)
+            detail.isFinished?.let { setFinished(novelId, it) }
             val existingNovel = novelDao.getNovelById(novelId)
             val finalNovel: NovelEntity
 

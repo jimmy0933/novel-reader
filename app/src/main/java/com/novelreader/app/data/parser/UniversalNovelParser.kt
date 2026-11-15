@@ -8,7 +8,9 @@ data class ParsedNovelDetail(
     val author: String,
     val coverUrl: String,
     val intro: String,
-    val chapters: List<ParsedChapterInfo>
+    val chapters: List<ParsedChapterInfo>,
+    /** 連載狀態：true=已完結、false=連載中、null=網站未提供 */
+    val isFinished: Boolean? = null
 )
 
 data class ParsedChapterInfo(
@@ -157,7 +159,8 @@ class UniversalNovelParser {
             author = cleanAuthor(author),
             coverUrl = coverUrl,
             intro = intro.trim(),
-            chapters = sortedChapters
+            chapters = sortedChapters,
+            isFinished = parseFinishedStatus(doc)
         )
     }
 
@@ -220,7 +223,14 @@ class UniversalNovelParser {
             val text = a.text().trim()
             if (href.isBlank() || text.isBlank() || !seen.add(href)) null else ParsedChapterInfo(text, href, 0)
         }.mapIndexed { i, c -> c.copy(index = i) }
-        return ParsedNovelDetail(title, author, cover, intro, chapters)
+        return ParsedNovelDetail(title, author, cover, intro, chapters, parseFinishedStatus(doc))
+    }
+
+    /** 由 og:novel:status 判斷連載狀態（如 連載 / 连载 / 完結 / 完结 / 完本） */
+    private fun parseFinishedStatus(doc: Document): Boolean? {
+        val status = doc.selectFirst("meta[property=og:novel:status]")?.attr("content")?.trim().orEmpty()
+        if (status.isBlank()) return null
+        return status.contains("完") || status.contains("已結束") || status.contains("已结束")
     }
 
     private fun cleanTitle(raw: String): String {
