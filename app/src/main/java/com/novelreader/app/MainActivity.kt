@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
         }
         val app = application as NovelApplication
         val repository = app.repository
+        lifecycleScope.launch { repository.migrateXszjPagedChapters() }
 
         setContent {
             NovelReaderTheme {

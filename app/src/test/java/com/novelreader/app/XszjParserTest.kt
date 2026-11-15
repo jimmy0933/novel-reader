@@ -54,4 +54,17 @@ class XszjParserTest {
         assertTrue(text.contains("老倒霉蛋了"))
         assertFalse(text.contains("function"))
     }
+
+    @Test
+    fun pagedChapterNextPage() {
+        val first = "https://xszj.org/b/480384/c/57083"
+        assertEquals(
+            "https://xszj.org/b/480384/c/57083?page=2",
+            parser.parseXszjNextPageUrl(sample("xszj_chapter_paged1.html"), first)
+        )
+        // 最後一頁的「下一章」不屬於本章，不可再往下抓
+        assertNull(parser.parseXszjNextPageUrl(sample("xszj_chapter_paged6.html"), "$first?page=6"))
+        // 單頁章節沒有分頁
+        assertNull(parser.parseXszjNextPageUrl(sample("xszj_chapter.html"), "https://xszj.org/b/103995/c/1407677"))
+    }
 }

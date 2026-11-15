@@ -196,6 +196,18 @@ class UniversalNovelParser {
         }
     }
 
+    /**
+     * xszj 的長章節會分成多頁（?page=2…），內文頁的「下一頁」連結帶有 page= 參數；
+     * 最後一頁的下一個連結指向下一章（無 page=），此時回傳 null。
+     */
+    fun parseXszjNextPageUrl(html: String, pageUrl: String): String? {
+        val doc = Jsoup.parse(html, pageUrl)
+        val next = doc.selectFirst("nav[aria-label=章节翻页] a[rel=next]")?.attr("abs:href") ?: return null
+        if (!next.contains("page=")) return null
+        val currentPath = pageUrl.substringBefore('?')
+        return if (next.substringBefore('?') == currentPath) next else null
+    }
+
     private fun parseXszjDetail(doc: Document): ParsedNovelDetail {
         val title = doc.selectFirst("article h1")?.text()?.trim().orEmpty()
         val author = doc.selectFirst("article a[href^=/z/]")?.text()?.trim() ?: "未知作者"

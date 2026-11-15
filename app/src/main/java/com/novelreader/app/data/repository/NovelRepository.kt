@@ -149,7 +149,24 @@ class NovelRepository(private val context: Context) {
                         return Result.failure(IllegalStateException("觸發防護驗證頁，無法直接擷取"))
                     }
 
-                    val content = parser.parseChapterContent(html)
+                    var content = parser.parseChapterContent(html)
+                    if (content.isNotBlank() && parser.isXszj(chapter.url)) {
+                        // 小說之家長章節分頁（?page=N），逐頁抓取後合併
+                        val parts = mutableListOf(content)
+                        var pageUrl = chapter.url
+                        var pageHtml = html
+                        var pages = 1
+                        while (pages < 100) {
+                            val nextUrl = parser.parseXszjNextPageUrl(pageHtml, pageUrl) ?: break
+                            pageHtml = fetchHtml(nextUrl)
+                            pageUrl = nextUrl
+                            val part = parser.parseChapterContent(pageHtml)
+                            if (part.isNotBlank()) parts.add(part)
+                            pages++
+                            delay(150)
+                        }
+                        content = parts.joinToString("\n\n")
+                    }
                     if (content.isBlank()) {
                         return Result.failure(IllegalStateException("章節正文解析失敗或內容空白"))
                     }
@@ -281,6 +298,17 @@ class NovelRepository(private val context: Context) {
             chapterDao.deleteChaptersByNovelId(novel.id)
             novelDao.deleteNovel(novel)
         }
+    }
+
+    /**
+     * 舊版只存了小說之家長章節的第一頁，一次性重設這些章節為未下載，讓它們重新抓取完整分頁內容。
+     */
+    suspend fun migrateXszjPagedChapters() = withContext(Dispatchers.IO) {
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("xszj_paged_fix_v1", false)) return@withContext
+        chapterDao.resetXszjDownloads()
+        novelDao.refreshAllDownloadedCounts()
+        prefs.edit().putBoolean("xszj_paged_fix_v1", true).apply()
     }
 
     private fun fetchHtml(url: String): String {

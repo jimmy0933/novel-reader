@@ -31,6 +31,9 @@ interface NovelDao {
 
     @Query("UPDATE novels SET downloadedChapters = (SELECT COUNT(*) FROM chapters WHERE novelId = :novelId AND isDownloaded = 1) WHERE id = :novelId")
     suspend fun refreshDownloadedCount(novelId: String)
+
+    @Query("UPDATE novels SET downloadedChapters = (SELECT COUNT(*) FROM chapters WHERE chapters.novelId = novels.id AND chapters.isDownloaded = 1)")
+    suspend fun refreshAllDownloadedCounts()
 }
 
 @Dao
@@ -58,6 +61,9 @@ interface ChapterDao {
 
     @Query("SELECT * FROM chapters WHERE novelId = :novelId AND isDownloaded = 0 ORDER BY chapterIndex ASC")
     suspend fun getPendingDownloadChapters(novelId: String): List<ChapterEntity>
+
+    @Query("UPDATE chapters SET isDownloaded = 0, content = NULL WHERE novelId IN (SELECT id FROM novels WHERE sourceUrl LIKE '%xszj.org%')")
+    suspend fun resetXszjDownloads()
 
     @Query("DELETE FROM chapters WHERE novelId = :novelId")
     suspend fun deleteChaptersByNovelId(novelId: String)
