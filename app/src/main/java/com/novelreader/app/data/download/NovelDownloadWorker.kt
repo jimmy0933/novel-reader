@@ -99,8 +99,23 @@ class NovelDownloadWorker(
             "NovelReader:DownloadWakeLock"
         )
 
+        // 鎖屏時保持 Wi-Fi 不休眠，避免螢幕關閉後下載停擺
+        @Suppress("DEPRECATION")
+        val wifiLock = try {
+            (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager)
+                ?.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "NovelReader:DownloadWifiLock")
+        } catch (e: Exception) {
+            null
+        }
+
         try {
-            wakeLock?.acquire(60 * 60 * 1000L /* 1 hour timeout */)
+            wakeLock?.acquire(6 * 60 * 60 * 1000L /* 6 hour timeout */)
+            try {
+                wifiLock?.setReferenceCounted(false)
+                wifiLock?.acquire()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
             createNotificationChannel()
 
             val novel = db.novelDao().getNovelById(novelId)
@@ -268,6 +283,11 @@ class NovelDownloadWorker(
                 )
             }
         } finally {
+            try {
+                if (wifiLock?.isHeld == true) wifiLock.release()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
             if (wakeLock?.isHeld == true) {
                 try {
                     wakeLock.release()

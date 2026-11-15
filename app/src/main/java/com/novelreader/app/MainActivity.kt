@@ -21,8 +21,39 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
+    private val notificationPermissionLauncher =
+        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    @android.annotation.SuppressLint("BatteryLife")
+    private fun requestIgnoreBatteryOptimizations() {
+        try {
+            startActivity(
+                android.content.Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    android.net.Uri.parse("package:$packageName")
+                )
+            )
+        } catch (e: Exception) {
+            try {
+                startActivity(android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) { }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Android 13+ 需要通知權限才能顯示背景下載通知
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
         val app = application as NovelApplication
         val repository = app.repository
 
@@ -34,6 +65,17 @@ class MainActivity : ComponentActivity() {
                 var showAddDialog by remember { mutableStateOf(false) }
                 var inputUrl by remember { mutableStateOf("") }
                 var isImporting by remember { mutableStateOf(false) }
+                var showBatteryDialog by remember { mutableStateOf(false) }
+                val appPrefs = remember { getSharedPreferences("app_prefs", MODE_PRIVATE) }
+
+                fun startDownload(novelId: String) {
+                    repository.startDownloadAllChapters(novelId)
+                    Toast.makeText(this@MainActivity, "已在背景開始整部下載，可鎖屏或離開 App", Toast.LENGTH_SHORT).show()
+                    // 首次下載時提示關閉電池最佳化，讓鎖屏後下載不被系統中斷
+                    if (!isIgnoringBatteryOptimizations() && !appPrefs.getBoolean("battery_prompted", false)) {
+                        showBatteryDialog = true
+                    }
+                }
 
                 NavHost(navController = navController, startDestination = "bookshelf") {
                     // 1. 書架主頁
@@ -48,10 +90,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onAddClick = { showAddDialog = true },
                             onOpenWebClick = { navController.navigate("web_browser") },
-                            onDownloadAll = { novelId ->
-                                repository.startDownloadAllChapters(novelId)
-                                Toast.makeText(this@MainActivity, "已在背景開始整部下載！", Toast.LENGTH_SHORT).show()
-                            },
+                            onDownloadAll = { novelId -> startDownload(novelId) },
                             onDeleteNovel = { novel ->
                                 lifecycleScope.launch {
                                     repository.deleteNovel(novel)
@@ -76,10 +115,7 @@ class MainActivity : ComponentActivity() {
                             onChapterClick = { index ->
                                 navController.navigate("reader/$novelId/$index")
                             },
-                            onDownloadAll = {
-                                repository.startDownloadAllChapters(novelId)
-                                Toast.makeText(this@MainActivity, "已在背景開始整部下載！", Toast.LENGTH_SHORT).show()
-                            },
+                            onDownloadAll = { startDownload(novelId) },
                             onSyncLatestChapters = { callback ->
                                 lifecycleScope.launch {
                                     Toast.makeText(this@MainActivity, "正在檢查並同步最新章節...", Toast.LENGTH_SHORT).show()
@@ -167,6 +203,30 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     }
+                }
+
+                if (showBatteryDialog) {
+                    AlertDialog(
+                        onDismissRequest = {
+                            showBatteryDialog = false
+                            appPrefs.edit().putBoolean("battery_prompted", true).apply()
+                        },
+                        title = { Text("允許鎖屏時持續下載") },
+                        text = { Text("為避免鎖屏或長時間下載時被系統省電機制中斷，請在接下來的畫面選擇「允許」忽略電池最佳化。") },
+                        confirmButton = {
+                            Button(onClick = {
+                                showBatteryDialog = false
+                                appPrefs.edit().putBoolean("battery_prompted", true).apply()
+                                requestIgnoreBatteryOptimizations()
+                            }) { Text("前往設定") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = {
+                                showBatteryDialog = false
+                                appPrefs.edit().putBoolean("battery_prompted", true).apply()
+                            }) { Text("稍後") }
+                        }
+                    )
                 }
 
                 // 貼網址匯入對話框
