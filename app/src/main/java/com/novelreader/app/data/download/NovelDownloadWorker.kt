@@ -138,6 +138,7 @@ class NovelDownloadWorker(
             var overallFailed = 0
             val failedChaptersIndices = mutableListOf<Int>()
             var retryCount = runAttemptCount
+            var noProgressPasses = 0
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val notificationId = NOTIFICATION_ID_OFFSET + novelId.hashCode()
 
@@ -158,6 +159,7 @@ class NovelDownloadWorker(
                     break
                 }
 
+                var passSuccess = 0
                 for ((index, chapter) in pendingChapters.withIndex()) {
                     if (isStopped) {
                         return@withContext Result.retry()
@@ -197,6 +199,7 @@ class NovelDownloadWorker(
 
                     if (downloadResult.isSuccess) {
                         overallSuccess++
+                        passSuccess++
                     } else {
                         val ex = downloadResult.exceptionOrNull()
                         if (ex is kotlinx.coroutines.CancellationException) {
@@ -209,16 +212,34 @@ class NovelDownloadWorker(
                         failedChaptersIndices.add(chapter.chapterIndex)
                     }
 
-                    delay(300)
+                    // 隨機間隔避免被網站判定為機器人而限速或斷線
+                    delay((300L..900L).random())
                 }
 
-                // Let the worker finish and use Result.retry() for proper backoff
-                break
+                // 一輪結束仍有失敗章節：只要這一輪有進展就立刻再跑一輪；
+                // 連續多輪完全沒進展（斷網、被限速等）才交給 WorkManager 退避重試，避免下載到一半自己停掉
+                if (isStopped) {
+                    return@withContext Result.retry()
+                }
+                if (passSuccess > 0) {
+                    noProgressPasses = 0
+                    if (db.chapterDao().getPendingDownloadChapters(novelId).isNotEmpty()) delay(2_000L)
+                } else {
+                    noProgressPasses++
+                    if (noProgressPasses >= 5) break
+                    delay(10_000L * noProgressPasses)
+                }
             }
+
+            // 以實際剩餘未下載章節為準（先前失敗、之後重試成功的不重複計算）
+            val stillPending = db.chapterDao().getPendingDownloadChapters(novelId)
+            overallFailed = stillPending.size
+            failedChaptersIndices.clear()
+            failedChaptersIndices.addAll(stillPending.map { it.chapterIndex })
 
             db.novelDao().refreshDownloadedCount(novelId)
 
-            val willRetry = overallFailed > 0 && !isStopped && runAttemptCount < 5
+            val willRetry = overallFailed > 0 && !isStopped && runAttemptCount < 20
             val willStopRetry = isStopped
             val status = if (isStopped) "STOPPED" else if (willRetry) "WAITING_RETRY" else if (overallFailed == 0) "SUCCESS" else "PARTIAL_SUCCESS"
             val msg = if (isStopped) "Worker was stopped by OS/User" else if (willRetry) "Waiting for retry..." else "Completed pass"
